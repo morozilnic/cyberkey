@@ -99,8 +99,8 @@ String getWeatherDescription(int code);
 void setupWebServer();
 void drawUI(uint32_t code, int remaining, time_t now);
 void drawStandbyScreen(time_t now);
-void startCaptivePortal();
-void connectWiFi();
+void startCaptivePortal(bool silent = false);
+void connectWiFi(bool silent = false);
 void powerDownWiFi();
 bool backupToSD();
 bool restoreFromSD();
@@ -356,14 +356,17 @@ void handleKeyPress(char key) {
     } else if (key == 'w' || key == 'W') { // Toggle Wi-Fi / Web Portal On-Demand
         if (wifiSleeping) {
             wifiSleeping = false;
-            connectWiFi();
+            statusMessage = "Connecting Wi-Fi...";
+            statusMsgUntil = millis() + 4000;
+            connectWiFi(true); // Silent reconnect without overwriting screen
             fetchWeather();
-            statusMessage = "Wi-Fi & Web: ON";
+            statusMessage = WiFi.isConnected() ? "Wi-Fi: " + connectedSSID : "Wi-Fi: Not Found";
+            statusMsgUntil = millis() + 2500;
         } else {
             powerDownWiFi();
             statusMessage = "Wi-Fi: Sleep (Batt Save)";
+            statusMsgUntil = millis() + 2500;
         }
-        statusMsgUntil = millis() + 2500;
     } else if ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) {
         // Quick Jump / Search by first letter of Issuer (or Name)
         char target = tolower(key);
@@ -812,13 +815,17 @@ void powerDownWiFi() {
     connectedSSID = "";
 }
 
-void connectWiFi() {
+void connectWiFi(bool silent) {
     if (wifiCount > 0) {
         WiFi.mode(WIFI_STA);
 
-        M5Cardputer.Display.print("  Scanning Wi-Fi...");
+        if (!silent) {
+            M5Cardputer.Display.print("  Scanning Wi-Fi...");
+        }
         int n = WiFi.scanNetworks();
-        M5Cardputer.Display.printf(" %d found\n", n);
+        if (!silent) {
+            M5Cardputer.Display.printf(" %d found\n", n);
+        }
 
         int bestIndex = -1;
         if (n > 0) {
@@ -839,55 +846,63 @@ void connectWiFi() {
             String ssid = wifiList[w].ssid;
             String pass = wifiList[w].pass;
 
-            M5Cardputer.Display.printf("  Connecting: %s\n", ssid.c_str());
+            if (!silent) {
+                M5Cardputer.Display.printf("  Connecting: %s\n", ssid.c_str());
+            }
             WiFi.begin(ssid.c_str(), pass.c_str());
 
             int timeout = 16;
             while (WiFi.status() != WL_CONNECTED && timeout > 0) {
                 delay(500);
-                M5Cardputer.Display.print(".");
+                if (!silent) {
+                    M5Cardputer.Display.print(".");
+                }
                 timeout--;
             }
 
             if (WiFi.status() == WL_CONNECTED) {
                 connectedSSID = ssid;
                 deviceIP = WiFi.localIP().toString();
-                M5Cardputer.Display.println("\n  WiFi Connected!");
-                M5Cardputer.Display.printf("  IP: %s\n", deviceIP.c_str());
+                if (!silent) {
+                    M5Cardputer.Display.println("\n  WiFi Connected!");
+                    M5Cardputer.Display.printf("  IP: %s\n", deviceIP.c_str());
+                    M5Cardputer.Display.print("  Syncing NTP Time...");
+                }
 
                 // Sync NTP
-                M5Cardputer.Display.print("  Syncing NTP Time...");
                 configTime(0, 0, NTP_SERVER1, NTP_SERVER2, NTP_SERVER3);
                 applyTimezone();
                 struct tm timeinfo;
                 if (getLocalTime(&timeinfo, 10000)) {
                     timeSynced = true;
-                    M5Cardputer.Display.println(" OK!");
+                    if (!silent) M5Cardputer.Display.println(" OK!");
                 } else {
-                    M5Cardputer.Display.println(" Failed!");
+                    if (!silent) M5Cardputer.Display.println(" Failed!");
                 }
                 fetchWeather();
-                delay(1000);
+                if (!silent) delay(1000);
                 return;
             }
-            M5Cardputer.Display.println(" Failed");
+            if (!silent) M5Cardputer.Display.println(" Failed");
         }
     }
 
-    startCaptivePortal();
+    startCaptivePortal(silent);
 }
 
-void startCaptivePortal() {
+void startCaptivePortal(bool silent) {
     isAPMode = true;
     WiFi.mode(WIFI_AP);
     WiFi.softAP("CyberKey-Setup", "");
     dnsServer.start(53, "*", WiFi.softAPIP());
     deviceIP = WiFi.softAPIP().toString();
 
-    M5Cardputer.Display.println("\n  >> Setup Mode Active <<");
-    M5Cardputer.Display.println("  1. Connect to WiFi: CyberKey-Setup");
-    M5Cardputer.Display.printf("  2. Open: http://%s\n", deviceIP.c_str());
-    delay(2000);
+    if (!silent) {
+        M5Cardputer.Display.println("\n  >> Setup Mode Active <<");
+        M5Cardputer.Display.println("  1. Connect to WiFi: CyberKey-Setup");
+        M5Cardputer.Display.printf("  2. Open: http://%s\n", deviceIP.c_str());
+        delay(2000);
+    }
 }
 
 const char HTML_INDEX[] PROGMEM = R"rawliteral(
