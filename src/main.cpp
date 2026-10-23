@@ -424,7 +424,7 @@ void drawStandbyScreen(time_t now) {
 
     if (currentWeatherTemp < 900.0) {
         char wStr[40];
-        snprintf(wStr, sizeof(wStr), "%.0f%s  %s", currentWeatherTemp, weatherUnits == "fahrenheit" ? "°F" : "°C", currentWeatherDesc.c_str());
+        snprintf(wStr, sizeof(wStr), "%.0f`%s  %s", currentWeatherTemp, weatherUnits == "fahrenheit" ? "F" : "C", currentWeatherDesc.c_str());
         canvas.setTextColor(TFT_WHITE, 0x10A2);
         canvas.setTextDatum(middle_center);
         canvas.drawString(wStr, 120, 99, 2);
@@ -437,7 +437,7 @@ void drawStandbyScreen(time_t now) {
     // Subtle bottom bar: Battery & Wake hint
     int batt = M5Cardputer.Power.getBatteryLevel();
     char bStr[32];
-    snprintf(bStr, sizeof(bStr), "🔋 %d%% | Press any key for 2FA", batt);
+    snprintf(bStr, sizeof(bStr), "BAT: %d%% | Press any key for 2FA", batt);
     canvas.setTextColor(0x52AA, TFT_BLACK);
     canvas.setTextDatum(top_center);
     canvas.drawString(bStr, 120, 118, 1);
