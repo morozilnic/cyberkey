@@ -1,7 +1,7 @@
 #include <M5Cardputer.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <HTTPUpdate.h>
+#include <Update.h>
 #include <WiFiClientSecure.h>
 #include "icon_jpeg.h"
 #include <WebServer.h>
@@ -208,29 +208,80 @@ void performOTAUpdate() {
 
     WiFiClientSecure secureClient;
     secureClient.setInsecure();
-    httpUpdate.setLedPin(-1);
-    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    httpUpdate.onProgress(otaProgressCallback);
+
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setTimeout(10000);
 
     String targetUrl = remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "https://cyberkey.sndjy.us/CyberKey-app.bin";
     if (targetUrl.startsWith("http://")) {
         targetUrl.replace("http://", "https://");
     }
 
-    t_httpUpdate_return ret = httpUpdate.update(secureClient, targetUrl);
-
-    switch (ret) {
-        case HTTP_UPDATE_FAILED:
-            statusMessage = "Update Failed: " + httpUpdate.getLastErrorString();
-            statusMsgUntil = millis() + 4000;
-            break;
-        case HTTP_UPDATE_NO_UPDATES:
-            statusMessage = "No Update";
-            statusMsgUntil = millis() + 2500;
-            break;
-        case HTTP_UPDATE_OK:
-            break;
+    if (!http.begin(secureClient, targetUrl)) {
+        statusMessage = "Connection Failed";
+        statusMsgUntil = millis() + 3000;
+        return;
     }
+
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        statusMessage = "HTTP Error: " + String(httpCode);
+        statusMsgUntil = millis() + 3000;
+        http.end();
+        return;
+    }
+
+    int contentLength = http.getSize();
+    if (contentLength <= 0) {
+        statusMessage = "Invalid Firmware Size";
+        statusMsgUntil = millis() + 3000;
+        http.end();
+        return;
+    }
+
+    if (!Update.begin(contentLength)) {
+        statusMessage = "Not Enough Space";
+        statusMsgUntil = millis() + 3000;
+        http.end();
+        return;
+    }
+
+    WiFiClient* stream = http.getStreamPtr();
+    size_t written = 0;
+    uint8_t buff[1024];
+
+    while (http.connected() && (written < (size_t)contentLength)) {
+        size_t avail = stream->available();
+        if (avail) {
+            int readBytes = stream->readBytes(buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
+            Update.write(buff, readBytes);
+            written += readBytes;
+            otaProgressCallback(written, contentLength);
+        }
+        delay(1);
+    }
+
+    if (Update.end()) {
+        if (Update.isFinished()) {
+            canvas.fillScreen(TFT_BLACK);
+            canvas.setTextColor(TFT_GREEN, TFT_BLACK);
+            canvas.setTextDatum(middle_center);
+            canvas.drawString("Update Success!", 120, 50, 2);
+            canvas.drawString("Rebooting...", 120, 80, 2);
+            canvas.pushSprite(0, 0);
+            delay(1500);
+            ESP.restart();
+        } else {
+            statusMessage = "Update not finished";
+            statusMsgUntil = millis() + 3000;
+        }
+    } else {
+        statusMessage = "Flash Error: " + String(Update.getError());
+        statusMsgUntil = millis() + 3000;
+    }
+
+    http.end();
 }
 
 void applyTimezone() {
@@ -537,7 +588,7 @@ void handleKeyPress(char key) {
             statusMessage = "Wi-Fi: Sleep (Batt Save)";
             statusMsgUntil = millis() + 2500;
         }
-    } else if ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) {
+    } else if (((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) && key != 'o' && key != 'O' && key != 'u' && key != 'U' && key != 'p' && key != 'P') {
         // Quick Jump / Search by first letter of Issuer (or Name)
         char target = tolower(key);
         for (int i = 0; i < accountCount; ++i) {
