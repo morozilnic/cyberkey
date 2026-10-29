@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
+#include <WiFiClientSecure.h>
 #include "icon_jpeg.h"
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -25,7 +26,7 @@
 #define NTP_SERVER3 "pool.ntp.org"
 
 #define FIRMWARE_VERSION "1.2.1"
-#define OTA_VERSION_URL  "http://cyberkey.sndjy.us/version.json"
+#define OTA_VERSION_URL  "https://cyberkey.sndjy.us/version.json"
 
 String remoteOtaVersion = "";
 String remoteOtaBinUrl = "";
@@ -138,9 +139,12 @@ void performOTAUpdate();
 void checkForOTAUpdates(bool notify) {
     if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) return;
 
+    WiFiClientSecure secureClient;
+    secureClient.setInsecure();
     HTTPClient http;
-    http.setTimeout(4000);
-    if (http.begin(OTA_VERSION_URL)) {
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setTimeout(5000);
+    if (http.begin(secureClient, OTA_VERSION_URL)) {
         int code = http.GET();
         if (code == HTTP_CODE_OK) {
             String payload = http.getString();
@@ -166,6 +170,26 @@ void checkForOTAUpdates(bool notify) {
     }
 }
 
+static void otaProgressCallback(int current, int total) {
+    canvas.fillScreen(TFT_BLACK);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("CyberKey OTA Update", 120, 25, 2);
+
+    int pct = (total > 0) ? (current * 100 / total) : 0;
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    canvas.drawString(String(pct) + "% (" + String(current / 1024) + " KB)", 120, 55, 2);
+
+    int barWidth = (total > 0) ? map(current, 0, total, 0, 200) : 0;
+    canvas.drawRect(19, 79, 202, 12, TFT_DARKGRAY);
+    canvas.fillRect(20, 80, barWidth, 10, TFT_GREEN);
+
+    canvas.setTextColor(0xFBE0, TFT_BLACK); // Gold/Orange warning
+    canvas.drawString("DO NOT POWER OFF", 120, 105, 2);
+    canvas.pushSprite(0, 0);
+    yield();
+}
+
 void performOTAUpdate() {
     if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) {
         statusMessage = "Need Wi-Fi for OTA";
@@ -178,17 +202,26 @@ void performOTAUpdate() {
     canvas.setTextDatum(middle_center);
     canvas.drawString("CyberKey OTA Update", 120, 30, 2);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    canvas.drawString("Downloading from cyberkey.sndjy.us...", 120, 60, 1);
+    canvas.drawString("Connecting to cyberkey.sndjy.us...", 120, 60, 1);
     canvas.drawString("DO NOT POWER OFF", 120, 85, 2);
     canvas.pushSprite(0, 0);
 
-    WiFiClient client;
+    WiFiClientSecure secureClient;
+    secureClient.setInsecure();
     httpUpdate.setLedPin(-1);
-    t_httpUpdate_return ret = httpUpdate.update(client, remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "http://cyberkey.sndjy.us/CyberKey-v1.2-app.bin");
+    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    httpUpdate.onProgress(otaProgressCallback);
+
+    String targetUrl = remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "https://cyberkey.sndjy.us/CyberKey-app.bin";
+    if (targetUrl.startsWith("http://")) {
+        targetUrl.replace("http://", "https://");
+    }
+
+    t_httpUpdate_return ret = httpUpdate.update(secureClient, targetUrl);
 
     switch (ret) {
         case HTTP_UPDATE_FAILED:
-            statusMessage = "Update Failed!";
+            statusMessage = "Update Failed: " + httpUpdate.getLastErrorString();
             statusMsgUntil = millis() + 4000;
             break;
         case HTTP_UPDATE_NO_UPDATES:
