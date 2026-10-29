@@ -1177,14 +1177,11 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 
   <div class="card">
     <h2>🔑 Google Password Manager Import (MicroSD)</h2>
-    <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Upload your exported <code>passwords.csv</code> from Google Password Manager. Passwords are saved safely onto the MicroSD card to leave onboard flash dedicated to 2FA.</p>
+    <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Upload your exported <code>passwords.csv</code> from Google Password Manager. Stored safely onto the MicroSD card.</p>
     <div class="dropzone" onclick="document.getElementById('csvInput').click()">
       Click or Drag &amp; Drop passwords.csv Here
-      <input type="file" id="csvInput" accept=".csv,text/csv" style="display:none;" onchange="handleCSVFile(this.files[0])">
+      <input type="file" id="csvInput" accept=".csv,text/csv" style="display:none;" onchange="uploadCSVFile(this.files[0])">
     </div>
-    <form id="csvForm" action="/import_csv" method="POST" style="display:none;">
-      <textarea id="csvData" name="csv_data"></textarea>
-    </form>
     <div id="csvStatus" style="font-size: 13px; color: #38bdf8; margin-bottom: 8px;"></div>
     <p style="font-size: 12px; color: #64748b; margin: 0;">Stored on MicroSD: <strong>%PASS_COUNT% passwords</strong> (%PASS_MATCHES% linked to active 2FA)</p>
   </div>
@@ -1246,17 +1243,28 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       reader.readAsText(file);
     }
 
-    function handleCSVFile(file) {
+    function uploadCSVFile(file) {
       if (!file) return;
       const status = document.getElementById('csvStatus');
-      status.innerText = "Reading " + file.name + "...";
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        document.getElementById('csvData').value = e.target.result;
-        status.innerText = "Uploading & Parsing passwords to SD card...";
-        document.getElementById('csvForm').submit();
+      status.innerText = "Uploading " + file.name + " (" + (file.size / 1024).toFixed(1) + " KB)...";
+
+      const formData = new FormData();
+      formData.append("file", file, "passwords.csv");
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/upload_csv", true);
+      xhr.onload = function() {
+        if (xhr.status === 200 || xhr.status === 303) {
+          status.innerText = "Passwords imported successfully! Reloading...";
+          setTimeout(() => { window.location.reload(); }, 1200);
+        } else {
+          status.innerText = "Import failed (HTTP " + xhr.status + ").";
+        }
       };
-      reader.readAsText(file);
+      xhr.onerror = function() {
+        status.innerText = "Upload error: connection interrupted.";
+      };
+      xhr.send(formData);
     }
 
     function decodeQR(file) {
@@ -1562,15 +1570,36 @@ void handleRestoreJSON() {
     server.send(303);
 }
 
-void handleImportCSV() {
-    if (server.hasArg("csv_data")) {
+static File csvUploadFile;
+
+void handleUploadCSVProcess() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
         ensureSD();
-        int imported = CyberPassVault::importGoogleCSV(server.arg("csv_data"));
-        statusMessage = "Imported " + String(imported) + " Passwords!";
-        statusMsgUntil = millis() + 3000;
+        if (SD.exists("/passwords.csv")) SD.remove("/passwords.csv");
+        csvUploadFile = SD.open("/passwords.csv", FILE_WRITE);
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (csvUploadFile) {
+            csvUploadFile.write(upload.buf, upload.currentSize);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (csvUploadFile) {
+            csvUploadFile.close();
+            // Stream parse directly from the written file on SD
+            File readFile = SD.open("/passwords.csv", FILE_READ);
+            int imported = 0;
+            if (readFile) {
+                imported = CyberPassVault::importCSVFile(readFile);
+                readFile.close();
+            }
+            statusMessage = "Imported " + String(imported) + " Passwords!";
+            statusMsgUntil = millis() + 3500;
+        }
     }
-    server.sendHeader("Location", "/");
-    server.send(303);
+}
+
+void handleUploadCSVComplete() {
+    server.send(200, "text/plain", "OK");
 }
 
 void setupWebServer() {
@@ -1583,7 +1612,7 @@ void setupWebServer() {
     server.on("/backup", HTTP_POST, handleBackup);
     server.on("/restore", HTTP_POST, handleRestore);
     server.on("/restore_json", HTTP_POST, handleRestoreJSON);
-    server.on("/import_csv", HTTP_POST, handleImportCSV);
+    server.on("/upload_csv", HTTP_POST, handleUploadCSVComplete, handleUploadCSVProcess);
     server.onNotFound([]() {
         if (isAPMode) {
             server.sendHeader("Location", "http://" + deviceIP + "/");

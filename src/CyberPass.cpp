@@ -199,18 +199,92 @@ int CyberPassVault::importGoogleCSV(const String& csvText) {
     return imported;
 }
 
+int CyberPassVault::importCSVFile(File& file) {
+    if (!file) return 0;
+
+    int imported = 0;
+    bool isHeader = true;
+    int colName = 0;
+    int colUrl = 1;
+    int colUser = 2;
+    int colPass = 3;
+    int colNote = 4;
+
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) continue;
+
+        std::vector<String> fields;
+        parseCSVRow(line, fields);
+
+        if (isHeader) {
+            isHeader = false;
+            for (size_t i = 0; i < fields.size(); ++i) {
+                String h = fields[i];
+                h.toLowerCase();
+                h.trim();
+                if (h == "name") colName = i;
+                else if (h == "url") colUrl = i;
+                else if (h == "username" || h == "user") colUser = i;
+                else if (h == "password" || h == "pass") colPass = i;
+                else if (h == "note" || h == "notes") colNote = i;
+            }
+            continue;
+        }
+
+        if (fields.size() <= (size_t)colPass) continue;
+
+        String rawName = fields.size() > (size_t)colName ? fields[colName] : "";
+        String rawUrl  = fields.size() > (size_t)colUrl ? fields[colUrl] : "";
+        String user    = fields.size() > (size_t)colUser ? fields[colUser] : "";
+        String pass    = fields.size() > (size_t)colPass ? fields[colPass] : "";
+        String note    = fields.size() > (size_t)colNote ? fields[colNote] : "";
+
+        rawName.trim();
+        rawUrl.trim();
+        user.trim();
+        pass.trim();
+        if (pass.length() == 0) continue;
+
+        String sName = cleanServiceName(rawName, rawUrl);
+
+        bool updated = false;
+        for (int i = 0; i < count; ++i) {
+            if (passwords[i].name.equalsIgnoreCase(sName) && passwords[i].username.equalsIgnoreCase(user)) {
+                passwords[i].password = pass;
+                passwords[i].url = rawUrl;
+                if (note.length() > 0) passwords[i].note = note;
+                updated = true;
+                imported++;
+                break;
+            }
+        }
+
+        if (!updated && count < MAX_SD_PASSWORDS) {
+            passwords[count].name     = sName;
+            passwords[count].url      = rawUrl;
+            passwords[count].username = user;
+            passwords[count].password = pass;
+            passwords[count].note     = note;
+            count++;
+            imported++;
+        }
+    }
+
+    if (imported > 0) {
+        saveToSD();
+    }
+    return imported;
+}
+
 int CyberPassVault::importFromSDCSV() {
     if (!SD.exists(VAULT_CSV_PATH)) return 0;
     File file = SD.open(VAULT_CSV_PATH, FILE_READ);
     if (!file) return 0;
-
-    String csvContent = "";
-    while (file.available()) {
-        csvContent += (char)file.read();
-    }
+    int imported = importCSVFile(file);
     file.close();
-
-    return importGoogleCSV(csvContent);
+    return imported;
 }
 
 int CyberPassVault::findMatch(const String& issuer, const String& username) {

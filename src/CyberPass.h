@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <FS.h>
 
 struct PasswordEntry {
     String name;      // Service/Site name, e.g. "Google", "GitHub"
@@ -27,6 +28,7 @@ public:
 
     // Parses a Google Password Manager CSV text and appends/merges into SD vault
     static int importGoogleCSV(const String& csvText);
+    static int importCSVFile(File& file);
 
     // Imports from /passwords.csv file directly on the SD card root
     static int importFromSDCSV();
