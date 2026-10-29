@@ -1453,14 +1453,6 @@ void handleRoot() {
 
     // Part 1: Top HTML with replacements
     String top = FPSTR(HTML_TOP);
-    top.replace("%FW_VER%", FIRMWARE_VERSION);
-    if (otaUpdateAvailable) {
-        top.replace("%OTA_STATUS%", "<span style='color:#10b981; font-weight:bold;'>— Update " + remoteOtaVersion + " Available!</span>");
-        top.replace("%OTA_DISABLED%", "");
-    } else {
-        top.replace("%OTA_STATUS%", "<span style='color:#64748b;'>— Up to date</span>");
-        top.replace("%OTA_DISABLED%", "disabled style='opacity:0.5;'");
-    }
     top.replace("%COUNT%", String(accountCount));
     top.replace("%MAX%", String(MAX_ACCOUNTS));
     server.sendContent(top);
@@ -1495,6 +1487,14 @@ void handleRoot() {
 
     // Part 3: Bottom HTML with Settings & Wi-Fi replacements
     String bottom = FPSTR(HTML_BOTTOM);
+    bottom.replace("%FW_VER%", FIRMWARE_VERSION);
+    if (otaUpdateAvailable) {
+        bottom.replace("%OTA_STATUS%", "<span style='color:#10b981; font-weight:bold;'>— Update " + remoteOtaVersion + " Available!</span>");
+        bottom.replace("%OTA_DISABLED%", "");
+    } else {
+        bottom.replace("%OTA_STATUS%", "<span style='color:#64748b;'>— Up to date</span>");
+        bottom.replace("%OTA_DISABLED%", "disabled style='opacity:0.5;'");
+    }
     bottom.replace("%WCOUNT%", String(wifiCount));
     bottom.replace("%WMAX%", String(MAX_WIFI));
     bottom.replace("%PASS_COUNT%", String(CyberPassVault::count));
