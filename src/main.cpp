@@ -137,19 +137,28 @@ void checkForOTAUpdates(bool notify = false);
 void performOTAUpdate();
 
 void checkForOTAUpdates(bool notify) {
-    if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) return;
+    if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) {
+        if (notify) {
+            statusMessage = "No Wi-Fi for OTA";
+            statusMsgUntil = millis() + 2500;
+        }
+        return;
+    }
 
     WiFiClientSecure secureClient;
     secureClient.setInsecure();
     HTTPClient http;
+    http.setUserAgent("ESP32-Cardputer-CyberKey");
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setTimeout(5000);
+    http.setTimeout(6000);
+
     if (http.begin(secureClient, OTA_VERSION_URL)) {
         int code = http.GET();
         if (code == HTTP_CODE_OK) {
             String payload = http.getString();
             JsonDocument doc;
-            if (!deserializeJson(doc, payload)) {
+            DeserializationError err = deserializeJson(doc, payload);
+            if (!err) {
                 const char* ver = doc["version"];
                 const char* url = doc["bin_url"];
                 if (ver && url) {
@@ -164,9 +173,18 @@ void checkForOTAUpdates(bool notify) {
                         statusMsgUntil = millis() + 2500;
                     }
                 }
+            } else if (notify) {
+                statusMessage = "JSON Error";
+                statusMsgUntil = millis() + 3000;
             }
+        } else if (notify) {
+            statusMessage = "OTA HTTP: " + String(code);
+            statusMsgUntil = millis() + 3000;
         }
         http.end();
+    } else if (notify) {
+        statusMessage = "SSL Conn Failed";
+        statusMsgUntil = millis() + 3000;
     }
 }
 
