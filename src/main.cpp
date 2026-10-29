@@ -11,6 +11,8 @@
 #include "USB.h"
 #include "USBHIDKeyboard.h"
 #include "CyberTOTP.h"
+#include "CyberTyping.h"
+#include "CyberPass.h"
 #include "icon_data.h"
 #include "icon_web.h"
 
@@ -49,6 +51,18 @@ DNSServer dnsServer;
 Preferences prefs;
 M5Canvas canvas(&M5Cardputer.Display);
 USBHIDKeyboard Keyboard;
+
+// Bridging functions for CyberTyping
+void usbTypePrint(const char* str) {
+    Keyboard.print(str);
+}
+void usbTypeKey(uint8_t key) {
+    Keyboard.write(key);
+}
+bool isUSBActive() {
+    return true;
+}
+
 
 bool isAPMode = false;
 bool timeSynced = false;
@@ -102,6 +116,7 @@ void drawStandbyScreen(time_t now);
 void startCaptivePortal(bool silent = false);
 void connectWiFi(bool silent = false);
 void powerDownWiFi();
+bool ensureSD();
 bool backupToSD();
 bool restoreFromSD();
 void wipeAllData();
@@ -191,9 +206,13 @@ void setup() {
     M5Cardputer.Display.println("CyberKey 2FA Vault");
     M5Cardputer.Display.println("------------------");
 
+    initBLEKeyboard();
     loadSettings();
     applyTimezone();
     loadAccounts();
+    if (ensureSD()) {
+        CyberPassVault::init();
+    }
     loadWiFi();
     connectWiFi();
     setupWebServer();
@@ -317,9 +336,36 @@ void loop() {
 void sendTOTPKeyboard(uint32_t code) {
     char codeStr[8];
     snprintf(codeStr, sizeof(codeStr), "%06lu", (unsigned long)code);
-    Keyboard.print(codeStr);
-    Keyboard.write(KEY_RETURN);
-    statusMessage = "Code Typed to USB!";
+    typeStringWithEnter(codeStr);
+    statusMessage = isBLEConnected() ? "Code Typed (BLE)!" : "Code Typed (USB)!";
+    statusMsgUntil = millis() + 2000;
+}
+
+void autoTypeUsername() {
+    if (accountCount == 0 || currentIndex >= accountCount) return;
+    String user = accounts[currentIndex].name;
+    int pIdx = CyberPassVault::findMatch(accounts[currentIndex].issuer, accounts[currentIndex].name);
+    if (pIdx >= 0 && CyberPassVault::passwords[pIdx].username.length() > 0) {
+        user = CyberPassVault::passwords[pIdx].username;
+    }
+    if (user.length() > 0) {
+        typeString(user);
+        statusMessage = isBLEConnected() ? "User Typed (BLE)!" : "User Typed (USB)!";
+    } else {
+        statusMessage = "No Username Found";
+    }
+    statusMsgUntil = millis() + 2000;
+}
+
+void autoTypePassword() {
+    if (accountCount == 0 || currentIndex >= accountCount) return;
+    int pIdx = CyberPassVault::findMatch(accounts[currentIndex].issuer, accounts[currentIndex].name);
+    if (pIdx >= 0 && CyberPassVault::passwords[pIdx].password.length() > 0) {
+        typeString(CyberPassVault::passwords[pIdx].password);
+        statusMessage = isBLEConnected() ? "Pass Typed (BLE)!" : "Pass Typed (USB)!";
+    } else {
+        statusMessage = "No SD Pass Found";
+    }
     statusMsgUntil = millis() + 2000;
 }
 
@@ -349,6 +395,10 @@ void handleKeyPress(char key) {
             statusMessage = "SD Restore Failed";
         }
         statusMsgUntil = millis() + 2500;
+    } else if (key == 'u' || key == 'U') { // Type Username
+        autoTypeUsername();
+    } else if (key == 'p' || key == 'P') { // Type Password
+        autoTypePassword();
     } else if (key == 'm' || key == 'M') { // Toggle Mute / Beep
         beepEnabled = !beepEnabled;
         statusMessage = beepEnabled ? "Chirp: ON" : "Chirp: OFF";
@@ -477,6 +527,13 @@ void drawUI(uint32_t code, int remaining, time_t now) {
         canvas.print(WiFi.isConnected() ? deviceIP : "No WiFi [W]");
     }
 
+    // BLE status badge on header
+    if (isBLEConnected()) {
+        canvas.fillRect(138, 4, 17, 12, 0x001F);
+        canvas.setTextColor(TFT_WHITE, 0x001F);
+        canvas.drawString("BT", 140, 6, 1);
+    }
+
     // Display Local Time on header
     canvas.setCursor(158, 6);
     canvas.setTextColor(timeSynced ? TFT_GREEN : TFT_YELLOW, 0x01E4);
@@ -580,7 +637,12 @@ void drawUI(uint32_t code, int remaining, time_t now) {
     canvas.setTextSize(1);
     canvas.setTextColor(0x7BEF, TFT_BLACK);
     canvas.setCursor(6, 118);
-    canvas.printf("%ds|[Enter]Type [S]Clock [A-Z]Find", remaining);
+    int matchIdx = CyberPassVault::findMatch(accounts[currentIndex].issuer, accounts[currentIndex].name);
+    if (matchIdx >= 0) {
+        canvas.printf("%ds|[Ent]2FA [U]Usr [P]Pass [S]Clk", remaining);
+    } else {
+        canvas.printf("%ds|[Ent]2FA [U]Usr [S]Clk [A-Z]Find", remaining);
+    }
 
     // Status Banner Toast Overlay (rendered last so it floats cleanly on top of all text)
     if (millis() < statusMsgUntil && statusMessage.length() > 0) {
@@ -702,6 +764,7 @@ void wipeAllData() {
     currentIndex = 0;
     wifiCount = 0;
     connectedSSID = "";
+    CyberPassVault::wipe();
     loadSettings();
 }
 
@@ -1042,6 +1105,20 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   </div>
 
   <div class="card">
+    <h2>🔑 Google Password Manager Import (MicroSD)</h2>
+    <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Upload your exported <code>passwords.csv</code> from Google Password Manager. Passwords are saved safely onto the MicroSD card to leave onboard flash dedicated to 2FA.</p>
+    <div class="dropzone" onclick="document.getElementById('csvInput').click()">
+      Click or Drag &amp; Drop passwords.csv Here
+      <input type="file" id="csvInput" accept=".csv,text/csv" style="display:none;" onchange="handleCSVFile(this.files[0])">
+    </div>
+    <form id="csvForm" action="/import_csv" method="POST" style="display:none;">
+      <textarea id="csvData" name="csv_data"></textarea>
+    </form>
+    <div id="csvStatus" style="font-size: 13px; color: #38bdf8; margin-bottom: 8px;"></div>
+    <p style="font-size: 12px; color: #64748b; margin: 0;">Stored on MicroSD: <strong>%PASS_COUNT% passwords</strong> (%PASS_MATCHES% linked to active 2FA)</p>
+  </div>
+
+  <div class="card">
     <h2>MicroSD Card Vault Backup</h2>
     <div style="display: flex; gap: 10px;">
       <form action="/backup" method="POST" style="flex:1;">
@@ -1077,6 +1154,19 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       }, function() {
         alert("Unable to retrieve your location. Please enter coordinates manually.");
       });
+    }
+
+    function handleCSVFile(file) {
+      if (!file) return;
+      const status = document.getElementById('csvStatus');
+      status.innerText = "Reading " + file.name + "...";
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        document.getElementById('csvData').value = e.target.result;
+        status.innerText = "Uploading & Parsing passwords to SD card...";
+        document.getElementById('csvForm').submit();
+      };
+      reader.readAsText(file);
     }
 
     function decodeQR(file) {
@@ -1166,6 +1256,12 @@ void handleRoot() {
     html.replace("%MAX%", String(MAX_ACCOUNTS));
     html.replace("%WCOUNT%", String(wifiCount));
     html.replace("%WMAX%", String(MAX_WIFI));
+    html.replace("%PASS_COUNT%", String(CyberPassVault::count));
+    int passLinked = 0;
+    for (int i = 0; i < accountCount; ++i) {
+        if (CyberPassVault::findMatch(accounts[i].issuer, accounts[i].name) >= 0) passLinked++;
+    }
+    html.replace("%PASS_MATCHES%", String(passLinked));
 
     // Timezone replacements
     html.replace("%TZ_EST%", tzName == "US/Eastern" ? "selected" : "");
@@ -1360,6 +1456,17 @@ void handleRestore() {
     server.send(303);
 }
 
+void handleImportCSV() {
+    if (server.hasArg("csv_data")) {
+        ensureSD();
+        int imported = CyberPassVault::importGoogleCSV(server.arg("csv_data"));
+        statusMessage = "Imported " + String(imported) + " Passwords!";
+        statusMsgUntil = millis() + 3000;
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
 void setupWebServer() {
     server.on("/", handleRoot);
     server.on("/add", HTTP_POST, handleAdd);
@@ -1369,6 +1476,7 @@ void setupWebServer() {
     server.on("/wifi_del", HTTP_POST, handleWiFiDel);
     server.on("/backup", HTTP_POST, handleBackup);
     server.on("/restore", HTTP_POST, handleRestore);
+    server.on("/import_csv", HTTP_POST, handleImportCSV);
     server.onNotFound([]() {
         if (isAPMode) {
             server.sendHeader("Location", "http://" + deviceIP + "/");

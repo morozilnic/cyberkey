@@ -29,9 +29,16 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 - 🏷️ **Dual-Field Account Identification**:
   - **Line 1 (Large Cyan)**: Primary Service / Site name (e.g. `GitHub`, `Google`, `Proton`, `AWS`).
   - **Line 2 (Muted Gray)**: Account username or email (e.g. `user@example.com`, `admin`).
-- ⌨️ **USB HID Auto-Type ("YubiKey" Mode)**:
-  - Plug your Cardputer into any PC, Mac, Linux machine, or iPad using USB-C.
-  - Press **`Enter`** on the Cardputer keyboard: it automatically types the 6-digit TOTP code into your active computer cursor and presses return!
+- ⌨️ **Dual USB HID & Bluetooth BLE Auto-Type ("YubiKey" Mode)**:
+  - Plug your Cardputer into any PC, Mac, Linux machine, or iPad using USB-C, **or** pair it wirelessly over Bluetooth Low Energy (**`CyberKey BLE`**).
+  - Press **`Enter`**: automatically types the active 6-digit TOTP code into your focused cursor and presses return!
+  - Press **`U`**: automatically types your **Username** for the selected account.
+  - Press **`P`**: automatically types your **Password** from the MicroSD password vault.
+- 🔑 **Google Password Manager MicroSD Import**:
+  - Drag-and-drop or upload your exported `passwords.csv` in the CyberKey web interface (or drop it onto the root of the MicroSD card).
+  - Automatically parses service names, URLs, usernames, and passwords directly into `/passwords.json` on the MicroSD card.
+  - Zero consumption of internal flash memory, leaving flash reserved exclusively for high-speed TOTP crypto.
+  - Smart fuzzy matching automatically links your passwords to your 2FA accounts by service name or username.
 - 🔍 **First-Letter Quick Search**:
   - Jump directly to any service across dozens of stored keys by pressing the first letter (`G` for Google/GitHub, `P` for Proton, `A` for AWS).
 - 🌐 **Web Management & Captive Portal**:
@@ -58,7 +65,9 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 
 | Key | Function |
 |:---:|---|
-| <kbd>Enter</kbd> | **USB Auto-Type**: Sends 6-digit code to connected computer via USB |
+| <kbd>Enter</kbd> | **Auto-Type TOTP**: Types active 6-digit TOTP code and presses Enter (BLE / USB) |
+| <kbd>U</kbd> | **Auto-Type Username**: Types the account username/email into focused cursor |
+| <kbd>P</kbd> | **Auto-Type Password**: Types the linked password stored on MicroSD |
 | <kbd>Space</kbd> / <kbd>D</kbd> / <kbd>.</kbd> / <kbd>/</kbd> | Next Account |
 | <kbd>A</kbd> / <kbd>,</kbd> / <kbd>;</kbd> | Previous Account |
 | <kbd>A</kbd> – <kbd>Z</kbd> | **Quick Jump**: Jump directly to first account starting with that letter |
@@ -66,22 +75,22 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 | <kbd>M</kbd> | Toggle Expiration Audio Chirp (ON / OFF) |
 | <kbd>B</kbd> | Quick Backup to MicroSD Card (`/cyberkey_backup.json`) |
 | <kbd>R</kbd> | Quick Restore from MicroSD Card |
-| <kbd>Del</kbd> | Emergency Panic Wipe (press twice to confirm) |
+| <kbd>Del</kbd> | Emergency Panic Wipe (press twice to wipe flash & SD passwords) |
 
 ---
 
 ## 🚀 Quick Start / Flashing
 
 ### Option A: M5Launcher (Easiest / Over-the-Air)
-1. Copy `CyberKey-v1.0-complete.bin` to your Cardputer's MicroSD card.
+1. Copy `CyberKey-v1.1-complete.bin` to your Cardputer's MicroSD card.
 2. Boot into **M5Launcher**.
-3. Select `CyberKey-v1.0-complete.bin` and flash at offset `0x00000`.
+3. Select `CyberKey-v1.1-complete.bin` and flash at offset `0x00000`.
 
 ### Option B: Web Flasher / esptool (USB-C)
 1. Hold the `G0` (Boot) button on your Cardputer and connect the USB-C cable to your computer.
 2. Run:
 ```bash
-esptool.py --chip esp32s3 write_flash 0x0000 CyberKey-v1.0-complete.bin
+esptool.py --chip esp32s3 write_flash 0x0000 CyberKey-v1.1-complete.bin
 ```
 
 ---
