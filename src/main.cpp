@@ -24,7 +24,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.2.0"
+#define FIRMWARE_VERSION "1.2.1"
 #define OTA_VERSION_URL  "http://cyberkey.sndjy.us/version.json"
 
 String remoteOtaVersion = "";
@@ -273,7 +273,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey Hardware 2FA", 120, 106, 2);
+    M5Cardputer.Display.drawString("CyberKey 2FA v1.2.1", 120, 106, 2);
     M5Cardputer.Display.setTextDatum(top_left);
     delay(1800);
 
