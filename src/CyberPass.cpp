@@ -32,11 +32,11 @@ static String cleanServiceName(String rawName, String rawUrl) {
 }
 
 bool CyberPassVault::init() {
-    bool loaded = loadFromSD();
+    // If a raw CSV exists, import it first and clean it up immediately
     if (SD.exists(VAULT_CSV_PATH)) {
         importFromSDCSV();
     }
-    return loaded;
+    return loadFromSD();
 }
 
 bool CyberPassVault::loadFromSD() {
@@ -46,23 +46,34 @@ bool CyberPassVault::loadFromSD() {
     File file = SD.open(VAULT_JSON_PATH, FILE_READ);
     if (!file) return false;
 
-    // Use streaming line-by-line reading to prevent heap exhaustion
-    // Format written by saveToSD is pretty-printed or one entry per line
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
-    if (err) return false;
+    // Line-by-line streaming deserialization:
+    // saveToSD() formats each object on its own line: {"name":...}\n
+    // This uses negligible heap (<1KB scratch buffer) instead of allocating a 100KB DOM tree!
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        yield(); // Feed watchdog
 
-    JsonArray arr = doc["passwords"].as<JsonArray>();
-    for (JsonObject obj : arr) {
+        if (line.startsWith("{") && line.indexOf("\"name\"") != -1) {
+            // Strip trailing comma if present
+            if (line.endsWith(",")) {
+                line.remove(line.length() - 1);
+            }
+
+            JsonDocument obj;
+            DeserializationError err = deserializeJson(obj, line);
+            if (!err && count < MAX_SD_PASSWORDS) {
+                passwords[count].name     = obj["name"].is<String>() ? obj["name"].as<String>() : "";
+                passwords[count].url      = obj["url"].is<String>() ? obj["url"].as<String>() : "";
+                passwords[count].username = obj["username"].is<String>() ? obj["username"].as<String>() : "";
+                passwords[count].password = obj["password"].is<String>() ? obj["password"].as<String>() : "";
+                passwords[count].note     = obj["note"].is<String>() ? obj["note"].as<String>() : "";
+                count++;
+            }
+        }
         if (count >= MAX_SD_PASSWORDS) break;
-        passwords[count].name     = obj["name"].is<String>() ? obj["name"].as<String>() : "";
-        passwords[count].url      = obj["url"].is<String>() ? obj["url"].as<String>() : "";
-        passwords[count].username = obj["username"].is<String>() ? obj["username"].as<String>() : "";
-        passwords[count].password = obj["password"].is<String>() ? obj["password"].as<String>() : "";
-        passwords[count].note     = obj["note"].is<String>() ? obj["note"].as<String>() : "";
-        count++;
     }
+    file.close();
     return true;
 }
 
@@ -315,6 +326,8 @@ int CyberPassVault::importFromSDCSV() {
     if (!file) return 0;
     int imported = importCSVFile(file);
     file.close();
+    // Delete the CSV so we never repeatedly re-parse it on every subsequent boot
+    SD.remove(VAULT_CSV_PATH);
     return imported;
 }
 

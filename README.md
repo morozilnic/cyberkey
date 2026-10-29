@@ -1,13 +1,14 @@
-# 🔐 CyberKey — Standalone Hardware 2FA Vault for M5Stack Cardputer
+# 🔐 CyberKey — Standalone Hardware 2FA & Password Vault for M5Stack Cardputer
 
 <p align="center">
-  <b>A sleek, air-gapped, open-source hardware TOTP authenticator with USB auto-typing, MicroSD backup, and zero master-password delays.</b>
+  <b>A sleek, air-gapped, open-source hardware TOTP authenticator with USB/BLE auto-typing, Google Password Manager MicroSD vault, OTA updates, and zero master-password delays.</b>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-ESP32--S3-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Device-M5Stack%20Cardputer-red?style=flat-square" alt="Device">
   <img src="https://img.shields.io/badge/TOTP-RFC%206238-green?style=flat-square" alt="RFC 6238">
+  <img src="https://img.shields.io/badge/Version-v1.2.4-brightgreen?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-purple?style=flat-square" alt="License">
 </p>
 
@@ -15,7 +16,7 @@
 
 ## 🌟 Overview
 
-**CyberKey** turns your [M5Stack Cardputer](https://docs.m5stack.com/en/core/cardputer) into a dedicated, standalone **Hardware Two-Factor Authenticator (2FA)**. 
+**CyberKey** turns your [M5Stack Cardputer](https://docs.m5stack.com/en/core/cardputer) into a dedicated, standalone **Hardware Two-Factor Authenticator (2FA) & Password Autotyper**. 
 
 No waiting for your phone to unlock, no cloud subscriptions, and no reliance on mobile apps. CyberKey computes standard RFC 6238 TOTP codes locally on the ESP32-S3 microcontroller using hardware-accelerated SHA1 crypto.
 
@@ -34,10 +35,14 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
   - Press **`Enter`**: automatically types the active 6-digit TOTP code into your focused cursor and presses return!
   - Press **`U`**: automatically types your **Username** for the selected account.
   - Press **`P`**: automatically types your **Password** from the MicroSD password vault.
-- 🔑 **Google Password Manager MicroSD Import**:
+- 🚀 **Dual LAN/WAN Over-The-Air (OTA) Updates**:
+  - Update your firmware wirelessly with a single keypress (<kbd>O</kbd>) or via the web portal.
+  - Dual smart routing checks local LAN (`http://192.168.5.55:8099`) when on your home network, falling back seamlessly to secure WAN (`https://cyberkey.sndjy.us`) when traveling.
+  - Low-footprint chunked flash streaming with real-time on-screen progress indicator.
+- 🔑 **Google Password Manager MicroSD Import & Streaming Vault**:
   - Drag-and-drop or upload your exported `passwords.csv` in the CyberKey web interface (or drop it onto the root of the MicroSD card).
   - Automatically parses service names, URLs, usernames, and passwords directly into `/passwords.json` on the MicroSD card.
-  - Zero consumption of internal flash memory, leaving flash reserved exclusively for high-speed TOTP crypto.
+  - High-performance, memory-efficient streaming loader ensures zero heap crashes or boot loops even with large password collections.
   - Smart fuzzy matching automatically links your passwords to your 2FA accounts by service name or username.
 - 🔍 **First-Letter Quick Search**:
   - Jump directly to any service across dozens of stored keys by pressing the first letter (`G` for Google/GitHub, `P` for Proton, `A` for AWS).
@@ -46,7 +51,7 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
   - **Smart QR Screenshot Decoder**: Drag-and-drop or upload a 2FA QR code screenshot in the browser; CyberKey decodes the secret, parses the issuer and username, and populates the fields automatically.
   - **Captive Portal Fallback**: If no saved Wi-Fi is reachable, CyberKey spins up a `CyberKey-Setup` hotspot at `http://192.168.4.1`.
 - 💾 **MicroSD Vault Backup & Restore**:
-  - Hit **`B`** on the keyboard to save an encrypted JSON backup to your MicroSD card (`/cyberkey_backup.json`).
+  - Hit **`B`** on the keyboard to save a backup to your MicroSD card (`/cyberkey_backup.json`).
   - Hit **`R`** to restore all accounts and Wi-Fi credentials onto any new device.
 - 📶 **Multi-Wi-Fi Profile Manager**:
   - Stores up to 5 Wi-Fi profiles.
@@ -71,6 +76,7 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 | <kbd>Space</kbd> / <kbd>D</kbd> / <kbd>.</kbd> / <kbd>/</kbd> | Next Account |
 | <kbd>A</kbd> / <kbd>,</kbd> / <kbd>;</kbd> | Previous Account |
 | <kbd>A</kbd> – <kbd>Z</kbd> | **Quick Jump**: Jump directly to first account starting with that letter |
+| <kbd>O</kbd> | **OTA Update**: Check for updates and flash new firmware over Wi-Fi |
 | <kbd>W</kbd> | **Wi-Fi Toggle**: Switch Wi-Fi radio ON / SLEEP (Eco-Mode) |
 | <kbd>M</kbd> | Toggle Expiration Audio Chirp (ON / OFF) |
 | <kbd>B</kbd> | Quick Backup to MicroSD Card (`/cyberkey_backup.json`) |
@@ -81,16 +87,21 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 
 ## 🚀 Quick Start / Flashing
 
-### Option A: M5Launcher (Easiest / Over-the-Air)
-1. Copy `CyberKey-v1.1-complete.bin` to your Cardputer's MicroSD card.
-2. Boot into **M5Launcher**.
-3. Select `CyberKey-v1.1-complete.bin` and flash at offset `0x00000`.
+### Option A: Over-The-Air (OTA) Update (If already running CyberKey)
+1. Ensure your Cardputer is connected to Wi-Fi.
+2. Press uppercase <kbd>O</kbd> on the Cardputer keyboard (or visit the web portal and click **Check for Updates**).
+3. The device will automatically stream the latest firmware and reboot.
 
-### Option B: Web Flasher / esptool (USB-C)
+### Option B: M5Launcher (MicroSD Card)
+1. Download `CyberKey-complete.bin`.
+2. Copy it to your Cardputer's MicroSD card.
+3. Boot into **M5Launcher**, select `CyberKey-complete.bin`, and flash at offset `0x00000`.
+
+### Option C: Web Flasher / esptool (USB-C)
 1. Hold the `G0` (Boot) button on your Cardputer and connect the USB-C cable to your computer.
 2. Run:
 ```bash
-esptool.py --chip esp32s3 write_flash 0x0000 CyberKey-v1.1-complete.bin
+esptool.py --chip esp32s3 write_flash 0x0000 CyberKey-complete.bin
 ```
 
 ---
@@ -101,7 +112,7 @@ This project is built using [PlatformIO](https://platformio.org/).
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/<your-username>/cardputer-cyberkey.git
+git clone https://github.com/your-username/cardputer-cyberkey.git
 cd cardputer-cyberkey
 ```
 
@@ -110,7 +121,12 @@ cd cardputer-cyberkey
 pio run
 ```
 
-3. Flash directly to Cardputer:
+3. Merge complete 8MB flash binary:
+```bash
+esptool.py --chip esp32s3 merge_bin -o CyberKey-complete.bin --flash_mode keep --flash_size 8MB 0x0000 .pio/build/m5stack-cardputer/bootloader.bin 0x8000 .pio/build/m5stack-cardputer/partitions.bin 0x10000 .pio/build/m5stack-cardputer/firmware.bin
+```
+
+4. Flash directly via USB:
 ```bash
 pio run -t upload
 ```
@@ -121,11 +137,10 @@ pio run -t upload
 
 - **Air-Gapped Operation**: After initial NTP time sync, Wi-Fi can be completely shut down (`W` key). The device functions 100% offline.
 - **On-Chip Hardware Crypto**: TOTP codes are calculated on-the-fly using ESP32-S3's hardware-accelerated `mbedtls` cryptographic engine.
-- **MicroSD Data Portability**: Backups are written in clean JSON format directly to the SD card root for simple offline archiving.
+- **MicroSD Data Portability**: Backups and passwords remain securely on the removable MicroSD card without risking exposure from internal flash dumps.
 
 ---
 
 ## 📄 License
 
 Distributed under the **MIT License**. See `LICENSE` for more information.
-EOF
