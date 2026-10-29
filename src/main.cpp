@@ -1125,7 +1125,7 @@ void startCaptivePortal(bool silent) {
     }
 }
 
-const char HTML_INDEX[] PROGMEM = R"rawliteral(
+const char HTML_TOP[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -1187,8 +1187,9 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 
   <div class="card">
     <h2>Saved 2FA Accounts (%COUNT%/%MAX%)</h2>
-    %ACCOUNTS_LIST%
-  </div>
+)rawliteral";
+
+const char HTML_BOTTOM[] PROGMEM = R"rawliteral(  </div>
 
   <div class="card">
     <h2>🕒 Standby Clock & Weather Settings</h2>
@@ -1446,79 +1447,88 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 void handleRoot() {
-    String html = FPSTR(HTML_INDEX);
-    html.replace("%FW_VER%", FIRMWARE_VERSION);
+    server.sendHeader("Cache-Control", "no-cache");
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html", "");
+
+    // Part 1: Top HTML with replacements
+    String top = FPSTR(HTML_TOP);
+    top.replace("%FW_VER%", FIRMWARE_VERSION);
     if (otaUpdateAvailable) {
-        html.replace("%OTA_STATUS%", "<span style='color:#10b981; font-weight:bold;'>— Update " + remoteOtaVersion + " Available!</span>");
-        html.replace("%OTA_DISABLED%", "");
+        top.replace("%OTA_STATUS%", "<span style='color:#10b981; font-weight:bold;'>— Update " + remoteOtaVersion + " Available!</span>");
+        top.replace("%OTA_DISABLED%", "");
     } else {
-        html.replace("%OTA_STATUS%", "<span style='color:#64748b;'>— Up to date</span>");
-        html.replace("%OTA_DISABLED%", "disabled style='opacity:0.5;'");
+        top.replace("%OTA_STATUS%", "<span style='color:#64748b;'>— Up to date</span>");
+        top.replace("%OTA_DISABLED%", "disabled style='opacity:0.5;'");
     }
-    html.replace("%COUNT%", String(accountCount));
-    html.replace("%MAX%", String(MAX_ACCOUNTS));
-    html.replace("%WCOUNT%", String(wifiCount));
-    html.replace("%WMAX%", String(MAX_WIFI));
-    html.replace("%PASS_COUNT%", String(CyberPassVault::count));
+    top.replace("%COUNT%", String(accountCount));
+    top.replace("%MAX%", String(MAX_ACCOUNTS));
+    server.sendContent(top);
+
+    // Part 2: Accounts List (Streamed dynamically per-account, zero memory overhead!)
+    if (accountCount == 0) {
+        server.sendContent("<p style='color: #94a3b8;'>No accounts stored yet.</p>");
+    } else {
+        for (int i = 0; i < accountCount; ++i) {
+            String item = "<div class='item'>";
+            String displayName = accounts[i].issuer.length() > 0 ? "<strong>" + accounts[i].issuer + "</strong> <span style='color:#94a3b8; font-size:13px;'>(" + accounts[i].name + ")</span>" : "<strong>" + accounts[i].name + "</strong>";
+            item += "<div>" + displayName + "</div>";
+
+            String isStr = accounts[i].issuer;
+            isStr.replace("'", "\'");
+            String nStr = accounts[i].name;
+            nStr.replace("'", "\'");
+            String sStr = accounts[i].secret;
+            sStr.replace("'", "\'");
+
+            item += "<div style='display:flex;'>";
+            item += "<button type='button' class='edit-btn' onclick=\"editAccount(" + String(i) + ", '" + isStr + "', '" + nStr + "', '" + sStr + "')\">Edit</button>";
+            item += "<form action='/del' method='POST' style='margin:0;'>";
+            item += "<input type='hidden' name='idx' value='" + String(i) + "'>";
+            item += "<button type='submit' class='del-btn'>Delete</button>";
+            item += "</form>";
+            item += "</div>";
+            item += "</div>";
+            server.sendContent(item);
+        }
+    }
+
+    // Part 3: Bottom HTML with Settings & Wi-Fi replacements
+    String bottom = FPSTR(HTML_BOTTOM);
+    bottom.replace("%WCOUNT%", String(wifiCount));
+    bottom.replace("%WMAX%", String(MAX_WIFI));
+    bottom.replace("%PASS_COUNT%", String(CyberPassVault::count));
     int passLinked = 0;
     for (int i = 0; i < accountCount; ++i) {
         if (CyberPassVault::findMatch(accounts[i].issuer, accounts[i].name) >= 0) passLinked++;
     }
-    html.replace("%PASS_MATCHES%", String(passLinked));
+    bottom.replace("%PASS_MATCHES%", String(passLinked));
 
     // Timezone replacements
-    html.replace("%TZ_EST%", tzName == "US/Eastern" ? "selected" : "");
-    html.replace("%TZ_CST%", tzName == "US/Central" ? "selected" : "");
-    html.replace("%TZ_MST%", tzName == "US/Mountain" ? "selected" : "");
-    html.replace("%TZ_PST%", tzName == "US/Pacific" ? "selected" : "");
-    html.replace("%TZ_UTC%", tzName == "UTC" ? "selected" : "");
-    html.replace("%TZ_POSIX%", tzPosix);
+    bottom.replace("%TZ_EST%", tzName == "US/Eastern" ? "selected" : "");
+    bottom.replace("%TZ_CST%", tzName == "US/Central" ? "selected" : "");
+    bottom.replace("%TZ_MST%", tzName == "US/Mountain" ? "selected" : "");
+    bottom.replace("%TZ_PST%", tzName == "US/Pacific" ? "selected" : "");
+    bottom.replace("%TZ_UTC%", tzName == "UTC" ? "selected" : "");
+    bottom.replace("%TZ_POSIX%", tzPosix);
 
     // Format & Standby replacements
-    html.replace("%FMT_12%", !use24Hour ? "selected" : "");
-    html.replace("%FMT_24%", use24Hour ? "selected" : "");
-    html.replace("%STBY_ON%", standbyEnabled ? "selected" : "");
-    html.replace("%STBY_OFF%", !standbyEnabled ? "selected" : "");
-    html.replace("%SEC_30%", standbyTimeoutSec == 30 ? "selected" : "");
-    html.replace("%SEC_45%", standbyTimeoutSec == 45 ? "selected" : "");
-    html.replace("%SEC_60%", standbyTimeoutSec == 60 ? "selected" : "");
-    html.replace("%SEC_120%", standbyTimeoutSec == 120 ? "selected" : "");
-    html.replace("%SEC_300%", standbyTimeoutSec == 300 ? "selected" : "");
+    bottom.replace("%FMT_12%", !use24Hour ? "selected" : "");
+    bottom.replace("%FMT_24%", use24Hour ? "selected" : "");
+    bottom.replace("%STBY_ON%", standbyEnabled ? "selected" : "");
+    bottom.replace("%STBY_OFF%", !standbyEnabled ? "selected" : "");
+    bottom.replace("%SEC_30%", standbyTimeoutSec == 30 ? "selected" : "");
+    bottom.replace("%SEC_45%", standbyTimeoutSec == 45 ? "selected" : "");
+    bottom.replace("%SEC_60%", standbyTimeoutSec == 60 ? "selected" : "");
+    bottom.replace("%SEC_120%", standbyTimeoutSec == 120 ? "selected" : "");
+    bottom.replace("%SEC_300%", standbyTimeoutSec == 300 ? "selected" : "");
 
     // Weather replacements
-    html.replace("%W_CITY%", weatherCity);
-    html.replace("%W_LAT%", String(weatherLat, 4));
-    html.replace("%W_LON%", String(weatherLon, 4));
-    html.replace("%UNIT_F%", weatherUnits == "fahrenheit" ? "selected" : "");
-    html.replace("%UNIT_C%", weatherUnits == "celsius" ? "selected" : "");
-
-    String list = "";
-    if (accountCount == 0) {
-        list = "<p style='color: #94a3b8;'>No accounts stored yet.</p>";
-    } else {
-        for (int i = 0; i < accountCount; ++i) {
-            list += "<div class='item'>";
-            String displayName = accounts[i].issuer.length() > 0 ? "<strong>" + accounts[i].issuer + "</strong> <span style='color:#94a3b8; font-size:13px;'>(" + accounts[i].name + ")</span>" : "<strong>" + accounts[i].name + "</strong>";
-            list += "<div>" + displayName + "</div>";
-
-            String isStr = accounts[i].issuer;
-            isStr.replace("'", "\\'");
-            String nStr = accounts[i].name;
-            nStr.replace("'", "\\'");
-            String sStr = accounts[i].secret;
-            sStr.replace("'", "\\'");
-
-            list += "<div style='display:flex;'>";
-            list += "<button type='button' class='edit-btn' onclick=\"editAccount(" + String(i) + ", '" + isStr + "', '" + nStr + "', '" + sStr + "')\">Edit</button>";
-            list += "<form action='/del' method='POST' style='margin:0;'>";
-            list += "<input type='hidden' name='idx' value='" + String(i) + "'>";
-            list += "<button type='submit' class='del-btn'>Delete</button>";
-            list += "</form>";
-            list += "</div>";
-            list += "</div>";
-        }
-    }
-    html.replace("%ACCOUNTS_LIST%", list);
+    bottom.replace("%W_CITY%", weatherCity);
+    bottom.replace("%W_LAT%", String(weatherLat, 4));
+    bottom.replace("%W_LON%", String(weatherLon, 4));
+    bottom.replace("%UNIT_F%", weatherUnits == "fahrenheit" ? "selected" : "");
+    bottom.replace("%UNIT_C%", weatherUnits == "celsius" ? "selected" : "");
 
     String wList = "";
     if (wifiCount == 0) {
@@ -1534,9 +1544,10 @@ void handleRoot() {
             wList += "</div>";
         }
     }
-    html.replace("%WIFI_LIST%", wList);
+    bottom.replace("%WIFI_LIST%", wList);
 
-    server.send(200, "text/html", html);
+    server.sendContent(bottom);
+    server.sendContent(""); // Final empty chunk closes chunked transfer
 }
 
 void handleSettings() {
