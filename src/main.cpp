@@ -136,6 +136,8 @@ void sendTOTPKeyboard(uint32_t code);
 void checkForOTAUpdates(bool notify = false);
 void performOTAUpdate();
 
+static const char* OTA_LAN_URL = "http://192.168.5.55:8099/version.json";
+
 void checkForOTAUpdates(bool notify) {
     if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) {
         if (notify) {
@@ -145,46 +147,61 @@ void checkForOTAUpdates(bool notify) {
         return;
     }
 
-    WiFiClientSecure secureClient;
-    secureClient.setInsecure();
     HTTPClient http;
-    http.setUserAgent("ESP32-Cardputer-CyberKey");
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setTimeout(6000);
+    http.setTimeout(2500);
+    bool success = false;
+    String payload = "";
 
-    if (http.begin(secureClient, OTA_VERSION_URL)) {
+    // 1. Try instant LAN HTTP check directly to host server
+    if (http.begin(OTA_LAN_URL)) {
         int code = http.GET();
         if (code == HTTP_CODE_OK) {
-            String payload = http.getString();
-            JsonDocument doc;
-            DeserializationError err = deserializeJson(doc, payload);
-            if (!err) {
-                const char* ver = doc["version"];
-                const char* url = doc["bin_url"];
-                if (ver && url) {
-                    remoteOtaVersion = String(ver);
-                    remoteOtaBinUrl = String(url);
-                    if (remoteOtaVersion != FIRMWARE_VERSION) {
-                        otaUpdateAvailable = true;
-                        statusMessage = "Update " + remoteOtaVersion + " Avail!";
-                        statusMsgUntil = millis() + 4000;
-                    } else if (notify) {
-                        statusMessage = "Up-to-date (v" + String(FIRMWARE_VERSION) + ")";
-                        statusMsgUntil = millis() + 2500;
-                    }
-                }
-            } else if (notify) {
-                statusMessage = "JSON Error";
-                statusMsgUntil = millis() + 3000;
-            }
-        } else if (notify) {
-            statusMessage = "OTA HTTP: " + String(code);
-            statusMsgUntil = millis() + 3000;
+            payload = http.getString();
+            success = true;
         }
         http.end();
-    } else if (notify) {
-        statusMessage = "SSL Conn Failed";
-        statusMsgUntil = millis() + 3000;
+    }
+
+    // 2. Fallback to public domain HTTPS if not at home
+    if (!success) {
+        WiFiClientSecure secureClient;
+        secureClient.setInsecure();
+        http.setTimeout(5000);
+        if (http.begin(secureClient, OTA_VERSION_URL)) {
+            int code = http.GET();
+            if (code == HTTP_CODE_OK) {
+                payload = http.getString();
+                success = true;
+            } else if (notify) {
+                statusMessage = "OTA HTTP: " + String(code);
+                statusMsgUntil = millis() + 3000;
+            }
+            http.end();
+        } else if (notify) {
+            statusMessage = "Conn Failed: -1";
+            statusMsgUntil = millis() + 3000;
+        }
+    }
+
+    if (success && payload.length() > 0) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, payload);
+        if (!err) {
+            const char* ver = doc["version"];
+            const char* url = doc["bin_url"];
+            if (ver && url) {
+                remoteOtaVersion = String(ver);
+                remoteOtaBinUrl = String(url);
+                if (remoteOtaVersion != FIRMWARE_VERSION) {
+                    otaUpdateAvailable = true;
+                    statusMessage = "Update " + remoteOtaVersion + " Avail!";
+                    statusMsgUntil = millis() + 4000;
+                } else if (notify) {
+                    statusMessage = "Up-to-date (v" + String(FIRMWARE_VERSION) + ")";
+                    statusMsgUntil = millis() + 2500;
+                }
+            }
+        }
     }
 }
 
@@ -220,27 +237,40 @@ void performOTAUpdate() {
     canvas.setTextDatum(middle_center);
     canvas.drawString("CyberKey OTA Update", 120, 30, 2);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    canvas.drawString("Connecting to cyberkey.sndjy.us...", 120, 60, 1);
+    canvas.drawString("Connecting to update server...", 120, 60, 1);
     canvas.drawString("DO NOT POWER OFF", 120, 85, 2);
     canvas.pushSprite(0, 0);
 
+    // Try LAN direct streaming first (ultra fast, rock solid)
+    String targetUrl = "http://192.168.5.55:8099/CyberKey-app.bin";
+    HTTPClient http;
+    http.setTimeout(3000);
+    bool useLan = false;
+
+    if (http.begin(targetUrl)) {
+        int code = http.sendRequest("HEAD");
+        if (code == 200) {
+            useLan = true;
+        }
+        http.end();
+    }
+
+    if (!useLan) {
+        targetUrl = remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "https://cyberkey.sndjy.us/CyberKey-app.bin";
+    }
+
+    WiFiClient client;
     WiFiClientSecure secureClient;
     secureClient.setInsecure();
 
-    HTTPClient http;
+    if (targetUrl.startsWith("https://")) {
+        http.begin(secureClient, targetUrl);
+    } else {
+        http.begin(client, targetUrl);
+    }
+
+    http.setTimeout(15000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setTimeout(10000);
-
-    String targetUrl = remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "https://cyberkey.sndjy.us/CyberKey-app.bin";
-    if (targetUrl.startsWith("http://")) {
-        targetUrl.replace("http://", "https://");
-    }
-
-    if (!http.begin(secureClient, targetUrl)) {
-        statusMessage = "Connection Failed";
-        statusMsgUntil = millis() + 3000;
-        return;
-    }
 
     int httpCode = http.GET();
     if (httpCode != HTTP_CODE_OK) {
@@ -252,7 +282,7 @@ void performOTAUpdate() {
 
     int contentLength = http.getSize();
     if (contentLength <= 0) {
-        statusMessage = "Invalid Firmware Size";
+        statusMessage = "Invalid Size";
         statusMsgUntil = millis() + 3000;
         http.end();
         return;
@@ -280,20 +310,15 @@ void performOTAUpdate() {
         delay(1);
     }
 
-    if (Update.end()) {
-        if (Update.isFinished()) {
-            canvas.fillScreen(TFT_BLACK);
-            canvas.setTextColor(TFT_GREEN, TFT_BLACK);
-            canvas.setTextDatum(middle_center);
-            canvas.drawString("Update Success!", 120, 50, 2);
-            canvas.drawString("Rebooting...", 120, 80, 2);
-            canvas.pushSprite(0, 0);
-            delay(1500);
-            ESP.restart();
-        } else {
-            statusMessage = "Update not finished";
-            statusMsgUntil = millis() + 3000;
-        }
+    if (Update.end() && Update.isFinished()) {
+        canvas.fillScreen(TFT_BLACK);
+        canvas.setTextColor(TFT_GREEN, TFT_BLACK);
+        canvas.setTextDatum(middle_center);
+        canvas.drawString("Update Success!", 120, 50, 2);
+        canvas.drawString("Rebooting...", 120, 80, 2);
+        canvas.pushSprite(0, 0);
+        delay(1500);
+        ESP.restart();
     } else {
         statusMessage = "Flash Error: " + String(Update.getError());
         statusMsgUntil = millis() + 3000;
