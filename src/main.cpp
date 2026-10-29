@@ -117,7 +117,8 @@ void startCaptivePortal(bool silent = false);
 void connectWiFi(bool silent = false);
 void powerDownWiFi();
 bool ensureSD();
-bool backupToSD();
+bool backupToSD(bool force = false);
+bool parseAndApplyBackupJSON(const String& jsonContent);
 bool restoreFromSD();
 void wipeAllData();
 void handleKeyPress(char key);
@@ -770,20 +771,61 @@ void wipeAllData() {
 
 bool ensureSD() {
     static bool initialized = false;
-    if (initialized) return true;
+    if (initialized && SD.cardType() != CARD_NONE) return true;
+
+    // Retry with multiple SPI frequencies if initial attempt fails
+    const uint32_t freqs[] = {25000000, 20000000, 10000000, 4000000};
     SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
-    if (SD.begin(SD_SPI_CS_PIN, SPI, 25000000)) {
-        initialized = true;
-        return true;
+
+    for (int i = 0; i < 4; ++i) {
+        if (SD.begin(SD_SPI_CS_PIN, SPI, freqs[i])) {
+            if (SD.cardType() != CARD_NONE) {
+                initialized = true;
+                return true;
+            }
+        }
+        delay(10);
     }
+    initialized = false;
     return false;
 }
 
-bool backupToSD() {
-    if (!ensureSD()) return false;
+bool backupToSD(bool force) {
+    if (!ensureSD()) {
+        statusMessage = "SD Card Not Detected";
+        return false;
+    }
+
+    // Safety guard: Prevent accidental overwrite of an existing backup with 0 accounts
+    if (accountCount == 0 && !force && SD.exists("/cyberkey_backup.json")) {
+        statusMessage = "Blocked: Vault Empty";
+        return false;
+    }
+
+    // If a backup already exists and has accounts, preserve it as a rolling .bak
+    if (SD.exists("/cyberkey_backup.json") && SD.exists("/cyberkey_backup.bak")) {
+        SD.remove("/cyberkey_backup.bak");
+    }
+    if (SD.exists("/cyberkey_backup.json")) {
+        // Copy current to .bak before replacing
+        File src = SD.open("/cyberkey_backup.json", FILE_READ);
+        if (src) {
+            File dst = SD.open("/cyberkey_backup.bak", FILE_WRITE);
+            if (dst) {
+                while (src.available()) {
+                    dst.write(src.read());
+                }
+                dst.close();
+            }
+            src.close();
+        }
+    }
 
     File file = SD.open("/cyberkey_backup.json", FILE_WRITE);
-    if (!file) return false;
+    if (!file) {
+        statusMessage = "SD Write Error";
+        return false;
+    }
 
     JsonDocument doc;
     JsonArray arr = doc["accounts"].to<JsonArray>();
@@ -814,41 +856,42 @@ bool backupToSD() {
 
     serializeJson(doc, file);
     file.close();
+    statusMessage = "SD Backup OK!";
     return true;
 }
 
-bool restoreFromSD() {
-    if (!ensureSD()) return false;
-    if (!SD.exists("/cyberkey_backup.json")) return false;
-
-    File file = SD.open("/cyberkey_backup.json", FILE_READ);
-    if (!file) return false;
-
+bool parseAndApplyBackupJSON(const String& jsonContent) {
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, file);
-    file.close();
+    DeserializationError error = deserializeJson(doc, jsonContent);
     if (error) return false;
 
-    JsonArray arr = doc["accounts"].as<JsonArray>();
-    accountCount = 0;
-    for (JsonObject obj : arr) {
-        if (accountCount >= MAX_ACCOUNTS) break;
-        accounts[accountCount].issuer = obj["issuer"].is<String>() ? obj["issuer"].as<String>() : "";
-        accounts[accountCount].name = obj["name"].as<String>();
-        accounts[accountCount].secret = obj["secret"].as<String>();
-        accountCount++;
+    if (doc["accounts"].is<JsonArray>()) {
+        JsonArray arr = doc["accounts"].as<JsonArray>();
+        if (arr.size() > 0) {
+            accountCount = 0;
+            for (JsonObject obj : arr) {
+                if (accountCount >= MAX_ACCOUNTS) break;
+                accounts[accountCount].issuer = obj["issuer"].is<String>() ? obj["issuer"].as<String>() : "";
+                accounts[accountCount].name = obj["name"].as<String>();
+                accounts[accountCount].secret = obj["secret"].as<String>();
+                accountCount++;
+            }
+            saveAccounts();
+        }
     }
 
     if (doc["wifi"].is<JsonArray>()) {
         JsonArray wArr = doc["wifi"].as<JsonArray>();
-        wifiCount = 0;
-        for (JsonObject wObj : wArr) {
-            if (wifiCount >= MAX_WIFI) break;
-            wifiList[wifiCount].ssid = wObj["ssid"].as<String>();
-            wifiList[wifiCount].pass = wObj["pass"].as<String>();
-            wifiCount++;
+        if (wArr.size() > 0) {
+            wifiCount = 0;
+            for (JsonObject wObj : wArr) {
+                if (wifiCount >= MAX_WIFI) break;
+                wifiList[wifiCount].ssid = wObj["ssid"].as<String>();
+                wifiList[wifiCount].pass = wObj["pass"].as<String>();
+                wifiCount++;
+            }
+            saveWiFi();
         }
-        saveWiFi();
     }
 
     if (doc["settings"].is<JsonObject>()) {
@@ -867,8 +910,36 @@ bool restoreFromSD() {
     }
 
     currentIndex = 0;
-    saveAccounts();
     return true;
+}
+
+bool restoreFromSD() {
+    if (!ensureSD()) {
+        statusMessage = "SD Card Not Detected";
+        return false;
+    }
+
+    const char* targets[] = {"/cyberkey_backup.json", "/cyberkey_backup.bak"};
+    for (int t = 0; t < 2; ++t) {
+        if (SD.exists(targets[t])) {
+            File file = SD.open(targets[t], FILE_READ);
+            if (file) {
+                String content = "";
+                while (file.available()) {
+                    content += (char)file.read();
+                }
+                file.close();
+
+                if (parseAndApplyBackupJSON(content)) {
+                    statusMessage = (t == 0) ? "SD Restore OK!" : "Restored from .bak!";
+                    return true;
+                }
+            }
+        }
+    }
+
+    statusMessage = "No Backup File Found";
+    return false;
 }
 
 void powerDownWiFi() {
@@ -1119,15 +1190,25 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
   </div>
 
   <div class="card">
-    <h2>MicroSD Card Vault Backup</h2>
-    <div style="display: flex; gap: 10px;">
+    <h2>MicroSD Card Vault Backup & Safety Guard</h2>
+    <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Backups are guarded against accidental blank overwrites and include rolling <code>.bak</code> copies.</p>
+    <div style="display: flex; gap: 10px; margin-bottom: 12px;">
       <form action="/backup" method="POST" style="flex:1;">
-        <button type="submit" class="btn-purple">💾 Backup to SD</button>
+        <button type="submit" class="btn-purple">💾 Save to SD</button>
       </form>
       <form action="/restore" method="POST" style="flex:1;">
         <button type="submit" class="btn-green">📂 Restore from SD</button>
       </form>
     </div>
+    <h3 style="font-size: 14px; color: #94a3b8; margin-top: 15px;">Paste or Upload Backup JSON</h3>
+    <div class="dropzone" onclick="document.getElementById('jsonFile').click()" style="padding: 12px; margin-bottom: 8px;">
+      Click or Drag &amp; Drop Backup .json file
+      <input type="file" id="jsonFile" accept=".json,application/json" style="display:none;" onchange="loadJSONFile(this.files[0])">
+    </div>
+    <form action="/restore_json" method="POST">
+      <textarea id="jsonPaste" name="json_content" placeholder='{"accounts":[{"issuer":"Google","name":"me@gmail.com","secret":"..."}]}' style="width:100%; height:70px; background:#0f172a; border:1px solid #475569; color:#fff; border-radius:8px; padding:8px; font-family:monospace; font-size:12px; box-sizing:border-box; margin-bottom:8px;"></textarea>
+      <button type="submit" class="btn-green" style="padding:10px;">📥 Apply JSON Directly to Vault</button>
+    </form>
   </div>
 
   <!-- Browser QR Code Scanner Library -->
@@ -1154,6 +1235,15 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
       }, function() {
         alert("Unable to retrieve your location. Please enter coordinates manually.");
       });
+    }
+
+    function loadJSONFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        document.getElementById('jsonPaste').value = e.target.result;
+      };
+      reader.readAsText(file);
     }
 
     function handleCSVFile(file) {
@@ -1452,6 +1542,22 @@ void handleBackup() {
 
 void handleRestore() {
     restoreFromSD();
+    statusMsgUntil = millis() + 3000;
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+void handleRestoreJSON() {
+    if (server.hasArg("json_content")) {
+        String json = server.arg("json_content");
+        if (parseAndApplyBackupJSON(json)) {
+            backupToSD(true); // Persist safely onto SD
+            statusMessage = "JSON Vault Restored!";
+        } else {
+            statusMessage = "Invalid Backup JSON";
+        }
+        statusMsgUntil = millis() + 3000;
+    }
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -1476,6 +1582,7 @@ void setupWebServer() {
     server.on("/wifi_del", HTTP_POST, handleWiFiDel);
     server.on("/backup", HTTP_POST, handleBackup);
     server.on("/restore", HTTP_POST, handleRestore);
+    server.on("/restore_json", HTTP_POST, handleRestoreJSON);
     server.on("/import_csv", HTTP_POST, handleImportCSV);
     server.onNotFound([]() {
         if (isAPMode) {
