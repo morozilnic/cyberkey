@@ -1,6 +1,8 @@
 #include <M5Cardputer.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include "icon_jpeg.h"
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
@@ -21,6 +23,13 @@
 #define NTP_SERVER1 "time.google.com"
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
+
+#define FIRMWARE_VERSION "1.2.0"
+#define OTA_VERSION_URL  "http://cyberkey.sndjy.us/version.json"
+
+String remoteOtaVersion = "";
+String remoteOtaBinUrl = "";
+bool otaUpdateAvailable = false;
 
 // Cardputer SD SPI Pins
 #define SD_SPI_SCK_PIN  40
@@ -123,6 +132,73 @@ bool restoreFromSD();
 void wipeAllData();
 void handleKeyPress(char key);
 void sendTOTPKeyboard(uint32_t code);
+void checkForOTAUpdates(bool notify = false);
+void performOTAUpdate();
+
+void checkForOTAUpdates(bool notify) {
+    if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) return;
+
+    HTTPClient http;
+    http.setTimeout(4000);
+    if (http.begin(OTA_VERSION_URL)) {
+        int code = http.GET();
+        if (code == HTTP_CODE_OK) {
+            String payload = http.getString();
+            JsonDocument doc;
+            if (!deserializeJson(doc, payload)) {
+                const char* ver = doc["version"];
+                const char* url = doc["bin_url"];
+                if (ver && url) {
+                    remoteOtaVersion = String(ver);
+                    remoteOtaBinUrl = String(url);
+                    if (remoteOtaVersion != FIRMWARE_VERSION) {
+                        otaUpdateAvailable = true;
+                        statusMessage = "Update " + remoteOtaVersion + " Avail!";
+                        statusMsgUntil = millis() + 4000;
+                    } else if (notify) {
+                        statusMessage = "Up-to-date (v" + String(FIRMWARE_VERSION) + ")";
+                        statusMsgUntil = millis() + 2500;
+                    }
+                }
+            }
+        }
+        http.end();
+    }
+}
+
+void performOTAUpdate() {
+    if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) {
+        statusMessage = "Need Wi-Fi for OTA";
+        statusMsgUntil = millis() + 2500;
+        return;
+    }
+
+    canvas.fillScreen(TFT_BLACK);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("CyberKey OTA Update", 120, 30, 2);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    canvas.drawString("Downloading from cyberkey.sndjy.us...", 120, 60, 1);
+    canvas.drawString("DO NOT POWER OFF", 120, 85, 2);
+    canvas.pushSprite(0, 0);
+
+    WiFiClient client;
+    httpUpdate.setLedPin(-1);
+    t_httpUpdate_return ret = httpUpdate.update(client, remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "http://cyberkey.sndjy.us/CyberKey-v1.2-app.bin");
+
+    switch (ret) {
+        case HTTP_UPDATE_FAILED:
+            statusMessage = "Update Failed!";
+            statusMsgUntil = millis() + 4000;
+            break;
+        case HTTP_UPDATE_NO_UPDATES:
+            statusMessage = "No Update";
+            statusMsgUntil = millis() + 2500;
+            break;
+        case HTTP_UPDATE_OK:
+            break;
+    }
+}
 
 void applyTimezone() {
     setenv("TZ", tzPosix.c_str(), 1);
@@ -389,6 +465,16 @@ void handleKeyPress(char key) {
             statusMessage = "SD Backup Failed";
         }
         statusMsgUntil = millis() + 2500;
+    } else if (key == 'o' || key == 'O') { // Trigger OTA Check/Flash
+        if (WiFi.isConnected()) {
+            checkForOTAUpdates(true);
+            if (otaUpdateAvailable) {
+                performOTAUpdate();
+            }
+        } else {
+            statusMessage = "Wi-Fi Needed for OTA";
+            statusMsgUntil = millis() + 2000;
+        }
     } else if (key == 'r' || key == 'R') { // Quick Restore from SD
         if (restoreFromSD()) {
             statusMessage = "SD Restore OK!";
@@ -1073,7 +1159,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 </head>
 <body>
   <div style="text-align: center; margin-bottom: 12px;">
-    <img src="%ICON_BASE64%" style="width: 80px; height: 80px; border-radius: 16px; box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);">
+    <img src="/icon.jpg" style="width: 80px; height: 80px; border-radius: 16px; box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);">
   </div>
   <h1>CyberKey Vault</h1>
   <p class="sub">Hardware 2FA & Smart Desk Clock</p>
@@ -1186,6 +1272,18 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
     <p style="font-size: 12px; color: #64748b; margin: 0;">Stored on MicroSD: <strong>%PASS_COUNT% passwords</strong> (%PASS_MATCHES% linked to active 2FA)</p>
   </div>
 
+  <div class="card">
+    <h2>🚀 Over-The-Air (OTA) Firmware</h2>
+    <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Current: <strong>v%FW_VER%</strong> %OTA_STATUS%</p>
+    <div style="display: flex; gap: 8px;">
+      <form action="/ota_check" method="POST" style="flex: 1;">
+        <button type="submit" class="btn-gray" style="padding: 10px;">🔍 Check Updates</button>
+      </form>
+      <form action="/ota_flash" method="POST" style="flex: 1;">
+        <button type="submit" class="btn-purple" style="padding: 10px;" %OTA_DISABLED%>⚡ Flash Update</button>
+      </form>
+    </div>
+  </div>
   <div class="card">
     <h2>MicroSD Card Vault Backup & Safety Guard</h2>
     <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Backups are guarded against accidental blank overwrites and include rolling <code>.bak</code> copies.</p>
@@ -1349,7 +1447,14 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 
 void handleRoot() {
     String html = FPSTR(HTML_INDEX);
-    html.replace("%ICON_BASE64%", FPSTR(ICON_BASE64_JPEG));
+    html.replace("%FW_VER%", FIRMWARE_VERSION);
+    if (otaUpdateAvailable) {
+        html.replace("%OTA_STATUS%", "<span style='color:#10b981; font-weight:bold;'>— Update " + remoteOtaVersion + " Available!</span>");
+        html.replace("%OTA_DISABLED%", "");
+    } else {
+        html.replace("%OTA_STATUS%", "<span style='color:#64748b;'>— Up to date</span>");
+        html.replace("%OTA_DISABLED%", "disabled style='opacity:0.5;'");
+    }
     html.replace("%COUNT%", String(accountCount));
     html.replace("%MAX%", String(MAX_ACCOUNTS));
     html.replace("%WCOUNT%", String(wifiCount));
@@ -1570,7 +1675,25 @@ void handleRestoreJSON() {
     server.send(303);
 }
 
+void handleIcon() {
+    server.sendHeader("Cache-Control", "max-age=86400");
+    server.send_P(200, "image/jpeg", (const char*)ICON_JPEG_BYTES, ICON_JPEG_LEN);
+}
+
+void handleOTACheck() {
+    checkForOTAUpdates(true);
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+void handleOTAFlash() {
+    server.send(200, "text/html", "<html><body style='background:#0f172a;color:#fff;font-family:sans-serif;text-align:center;padding:50px;'><h2>Flashing Firmware Update...</h2><p>CyberKey is updating and will reboot in 10-15 seconds.</p><script>setTimeout(()=>{window.location.href='/';},15000);</script></body></html>");
+    delay(200);
+    performOTAUpdate();
+}
+
 static File csvUploadFile;
+static bool csvUploadPendingParse = false;
 
 void handleUploadCSVProcess() {
     HTTPUpload& upload = server.upload();
@@ -1585,25 +1708,31 @@ void handleUploadCSVProcess() {
     } else if (upload.status == UPLOAD_FILE_END) {
         if (csvUploadFile) {
             csvUploadFile.close();
-            // Stream parse directly from the written file on SD
-            File readFile = SD.open("/passwords.csv", FILE_READ);
-            int imported = 0;
-            if (readFile) {
-                imported = CyberPassVault::importCSVFile(readFile);
-                readFile.close();
-            }
-            statusMessage = "Imported " + String(imported) + " Passwords!";
-            statusMsgUntil = millis() + 3500;
+            csvUploadPendingParse = true;
         }
     }
 }
 
 void handleUploadCSVComplete() {
     server.send(200, "text/plain", "OK");
+    if (csvUploadPendingParse) {
+        csvUploadPendingParse = false;
+        File readFile = SD.open("/passwords.csv", FILE_READ);
+        int imported = 0;
+        if (readFile) {
+            imported = CyberPassVault::importCSVFile(readFile);
+            readFile.close();
+        }
+        statusMessage = "Imported " + String(imported) + " Passwords!";
+        statusMsgUntil = millis() + 3500;
+    }
 }
 
 void setupWebServer() {
     server.on("/", handleRoot);
+    server.on("/icon.jpg", handleIcon);
+    server.on("/ota_check", HTTP_POST, handleOTACheck);
+    server.on("/ota_flash", HTTP_POST, handleOTAFlash);
     server.on("/add", HTTP_POST, handleAdd);
     server.on("/del", HTTP_POST, handleDelete);
     server.on("/settings", HTTP_POST, handleSettings);
