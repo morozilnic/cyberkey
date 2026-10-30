@@ -25,7 +25,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.2.4"
+#define FIRMWARE_VERSION "1.3.0"
 #define OTA_VERSION_URL  "https://cyberkey.sndjy.us/version.json"
 
 String remoteOtaVersion = "";

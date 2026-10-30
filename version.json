@@ -1,0 +1,5 @@
+{
+  "version": "1.3.0",
+  "bin_url": "https://github.com/sndjy1986/cyberkey/releases/download/v1.3.0/CyberKey-app.bin",
+  "notes": "CyberKey v1.3.0 with new icon and improved BLE HID"
+}
