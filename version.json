@@ -1,5 +1,5 @@
 {
-  "version": "1.3.9",
+  "version": "1.3.10",
   "bin_url": "https://github.com/morozilnic/cyberkey/releases/latest/download/CyberKey-app.bin",
-  "notes": "CyberKey v1.3.9; add native USB CDC Serial alongside HID for OTA diagnostics, correct firmware version reporting, and include side-button quick lock"
+  "notes": "CyberKey v1.3.10; OTA serial diagnostic test build with native USB CDC alongside HID and side-button quick lock"
 }
