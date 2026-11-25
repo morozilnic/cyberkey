@@ -29,7 +29,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.4"
+#define FIRMWARE_VERSION "1.3.5"
 #define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
 static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
@@ -257,12 +257,19 @@ void checkForOTAUpdates(bool notify) {
 }
 
 static void otaProgressCallback(size_t current, size_t total) {
+    static int lastProgressPercent = -1;
+    const int pct = (total > 0) ? static_cast<int>((current * 100) / total) : 0;
+    if (pct == lastProgressPercent && current < total) {
+        delay(1);
+        return;
+    }
+    lastProgressPercent = pct;
+
     canvas.fillScreen(TFT_BLACK);
     canvas.setTextColor(TFT_CYAN, TFT_BLACK);
     canvas.setTextDatum(middle_center);
     canvas.drawString("CyberKey OTA Update", 120, 25, 2);
 
-    int pct = (total > 0) ? static_cast<int>((current * 100) / total) : 0;
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
     canvas.drawString(String(pct) + "% (" + String(current / 1024) + " KB)", 120, 55, 2);
 
@@ -273,7 +280,7 @@ static void otaProgressCallback(size_t current, size_t total) {
     canvas.setTextColor(0xFBE0, TFT_BLACK); // Gold/Orange warning
     canvas.drawString("DO NOT POWER OFF", 120, 105, 2);
     canvas.pushSprite(0, 0);
-    yield();
+    delay(1);
 }
 
 void performOTAUpdate() {
@@ -348,12 +355,35 @@ void performOTAUpdate() {
         Update.abort();
         statusMessage = "OTA incomplete: " + String(updateError);
         statusMsgUntil = millis() + 5000;
+        canvas.fillScreen(TFT_BLACK);
+        canvas.setTextColor(TFT_RED, TFT_BLACK);
+        canvas.setTextDatum(middle_center);
+        canvas.drawString("OTA Incomplete", 120, 45, 2);
+        canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+        canvas.drawString("Error " + String(updateError), 120, 75, 2);
+        canvas.pushSprite(0, 0);
+        delay(2500);
         return;
     }
 
+    canvas.fillScreen(TFT_BLACK);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("Verifying OTA image...", 120, 60, 2);
+    canvas.pushSprite(0, 0);
+
     if (!Update.end()) {
-        statusMessage = "Flash Error: " + String(Update.getError());
+        const uint8_t updateError = Update.getError();
+        statusMessage = "Flash Error: " + String(updateError);
         statusMsgUntil = millis() + 3000;
+        canvas.fillScreen(TFT_BLACK);
+        canvas.setTextColor(TFT_RED, TFT_BLACK);
+        canvas.setTextDatum(middle_center);
+        canvas.drawString("Flash Error", 120, 45, 2);
+        canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+        canvas.drawString("Error " + String(updateError), 120, 75, 2);
+        canvas.pushSprite(0, 0);
+        delay(2500);
         return;
     }
 
@@ -363,7 +393,7 @@ void performOTAUpdate() {
     canvas.drawString("Update Success!", 120, 50, 2);
     canvas.drawString("Rebooting...", 120, 80, 2);
     canvas.pushSprite(0, 0);
-    delay(1500);
+    delay(2500);
     ESP.restart();
 }
 
@@ -886,7 +916,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey v1.3.4", 120, 104, 2);
+    M5Cardputer.Display.drawString("CyberKey v1.3.5", 120, 104, 2);
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
     M5Cardputer.Display.drawString("UNOFFICIAL MOD - NOT ORIGINAL", 120, 124, 1);
     M5Cardputer.Display.setTextDatum(top_left);
