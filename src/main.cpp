@@ -29,7 +29,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.5"
+#define FIRMWARE_VERSION "1.3.6"
 #define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
 static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
@@ -608,11 +608,12 @@ String readStartupSecret(const String& prompt, size_t maxLength) {
     }
 }
 
-void showStartupMessage(const String& title, const String& firstLine, const String& secondLine = "") {
+void showStartupMessage(const String& title, const String& firstLine, const String& secondLine = "",
+                        float titleSize = 2) {
     M5Cardputer.Display.fillScreen(TFT_BLACK);
     M5Cardputer.Display.setTextDatum(middle_center);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
-    M5Cardputer.Display.setTextSize(2);
+    M5Cardputer.Display.setTextSize(titleSize);
     M5Cardputer.Display.drawString(title, 120, 30);
     M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5Cardputer.Display.setTextSize(1);
@@ -841,7 +842,7 @@ bool runMasterPasswordGate() {
             String recoveryCode = readStartupSecret("Enter recovery code", 32);
             if (!CyberCrypto::unlockMasterKeyWithRecovery(recoveryCode,
                                                           recoveryWrapper.data(), recoveryWrapper.size())) {
-                showStartupMessage("Invalid recovery code", "Try again");
+                showStartupMessage("Invalid recovery code", "Try again", "", 1.5);
                 delay(1200);
                 continue;
             }
@@ -916,7 +917,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey v1.3.5", 120, 104, 2);
+    M5Cardputer.Display.drawString("CyberKey v1.3.6", 120, 104, 2);
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
     M5Cardputer.Display.drawString("UNOFFICIAL MOD - NOT ORIGINAL", 120, 124, 1);
     M5Cardputer.Display.setTextDatum(top_left);
