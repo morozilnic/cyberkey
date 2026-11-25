@@ -30,7 +30,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.7"
+#define FIRMWARE_VERSION "1.3.9"
 #define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
 static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
@@ -947,6 +947,7 @@ static void lockAndReauthenticate() {
 }
 
 void setup() {
+    Serial.begin(115200);
     Serial.printf("CyberKey v%s boot; reset reason %d\n", FIRMWARE_VERSION,
                   static_cast<int>(esp_reset_reason()));
     auto cfg = M5.config();
@@ -974,7 +975,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey v1.3.7", 120, 104, 2);
+    M5Cardputer.Display.drawString("CyberKey v1.3.9", 120, 104, 2);
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
     M5Cardputer.Display.drawString("UNOFFICIAL MOD - NOT ORIGINAL", 120, 124, 1);
     M5Cardputer.Display.setTextDatum(top_left);

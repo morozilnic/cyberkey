@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Platform-ESP32--S3-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Device-M5Stack%20Cardputer-red?style=flat-square" alt="Device">
   <img src="https://img.shields.io/badge/TOTP-RFC%206238-green?style=flat-square" alt="RFC 6238">
-  <img src="https://img.shields.io/badge/Version-v1.3.8-brightgreen?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-v1.3.9-brightgreen?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-purple?style=flat-square" alt="License">
 </p>
 
@@ -30,6 +30,7 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 
 - 🔐 **Master Password Startup Lock**: Enter the master password on the Cardputer at every boot before CyberKey decrypts data or starts USB HID, Bluetooth, Wi-Fi, NTP, or the web portal.
 - 🔒 **Quick Lock**: Click the Cardputer side button (BtnA/GO) while the app is running to clear decrypted vault data from memory, stop the web server, and require the master password again.
+- 🖥️ **USB Serial OTA Diagnostics**: Native USB CDC provides a serial port alongside the HID keyboard; monitor OTA logs at 115200 baud.
 - 🗝️ **Offline Recovery Code**: First-time setup generates one recovery code shown once on the display. Store it offline; it can unlock the data and set a replacement master password.
 - 🏷️ **Dual-Field Account Identification**:
   - **Line 1 (Large Cyan)**: Primary Service / Site name (e.g. `GitHub`, `Google`, `Proton`, `AWS`).
