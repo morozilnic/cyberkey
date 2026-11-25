@@ -1,4 +1,5 @@
 #include "CyberPass.h"
+#include "CyberCrypto.h"
 #include <vector>
 #include <SD.h>
 #include <SPI.h>
@@ -9,6 +10,8 @@ int CyberPassVault::count = 0;
 
 static const char* VAULT_JSON_PATH = "/passwords.json";
 static const char* VAULT_CSV_PATH  = "/passwords.csv";
+static const char* VAULT_TEMP_PATH = "/passwords.tmp";
+static const char* VAULT_OLD_PATH  = "/passwords.old";
 
 static String cleanServiceName(String rawName, String rawUrl) {
     if (rawName.length() > 0) return rawName;
@@ -32,25 +35,52 @@ static String cleanServiceName(String rawName, String rawUrl) {
 }
 
 bool CyberPassVault::init() {
+    count = 0;
+    if (!CyberCrypto::isReady()) return false;
+
+    if (SD.exists(VAULT_TEMP_PATH) && !SD.remove(VAULT_TEMP_PATH)) return false;
+    if (SD.exists(VAULT_OLD_PATH)) {
+        if (!SD.exists(VAULT_JSON_PATH)) {
+            if (!SD.rename(VAULT_OLD_PATH, VAULT_JSON_PATH)) return false;
+        } else if (!SD.remove(VAULT_OLD_PATH)) {
+            return false;
+        }
+    }
+
     // If a raw CSV exists, import it first and clean it up immediately
     if (SD.exists(VAULT_CSV_PATH)) {
-        importFromSDCSV();
+        if (importFromSDCSV() < 0) return false;
     }
     return loadFromSD();
 }
 
 bool CyberPassVault::loadFromSD() {
     count = 0;
+    if (!CyberCrypto::isReady()) return false;
     if (!SD.exists(VAULT_JSON_PATH)) return false;
 
     File file = SD.open(VAULT_JSON_PATH, FILE_READ);
     if (!file) return false;
 
-    // Line-by-line streaming deserialization:
-    // saveToSD() formats each object on its own line: {"name":...}\n
-    // This uses negligible heap (<1KB scratch buffer) instead of allocating a 100KB DOM tree!
-    while (file.available()) {
-        String line = file.readStringUntil('\n');
+    size_t length = file.size();
+    std::vector<uint8_t> data(length + 1, 0);
+    size_t bytesRead = file.read(data.data(), length);
+    file.close();
+    if (bytesRead != length) return false;
+
+    String content;
+    if (CyberCrypto::isSealed(data.data(), length)) {
+        if (!CyberCrypto::open(data.data(), length, "passwords", content)) return false;
+    } else {
+        content = String(reinterpret_cast<const char*>(data.data()));
+    }
+
+    size_t lineStart = 0;
+    while (lineStart < content.length()) {
+        int lineEnd = content.indexOf('\n', lineStart);
+        if (lineEnd < 0) lineEnd = content.length();
+        String line = content.substring(lineStart, lineEnd);
+        lineStart = static_cast<size_t>(lineEnd) + 1;
         line.trim();
         yield(); // Feed watchdog
 
@@ -73,58 +103,84 @@ bool CyberPassVault::loadFromSD() {
         }
         if (count >= MAX_SD_PASSWORDS) break;
     }
-    file.close();
     return true;
 }
 
-// Writes JSON directly as a stream without allocating a massive 40KB JsonDocument in RAM
 bool CyberPassVault::saveToSD() {
-    File file = SD.open(VAULT_JSON_PATH, FILE_WRITE);
-    if (!file) return false;
+    if (!CyberCrypto::isReady()) return false;
 
-    file.print("{\"passwords\":[\n");
+    String plaintext = "{\"passwords\":[\n";
     for (int i = 0; i < count; ++i) {
-        file.print("  {");
-        file.print("\"name\":");
-        // Use small scratch doc to safely serialize escaped strings
+        plaintext += "  {";
+        plaintext += "\"name\":";
         JsonDocument scratch;
         scratch["s"] = passwords[i].name;
         String sName;
         serializeJson(scratch["s"], sName);
-        file.print(sName);
+        plaintext += sName;
 
-        file.print(",\"url\":");
+        plaintext += ",\"url\":";
         scratch["s"] = passwords[i].url;
         String sUrl;
         serializeJson(scratch["s"], sUrl);
-        file.print(sUrl);
+        plaintext += sUrl;
 
-        file.print(",\"username\":");
+        plaintext += ",\"username\":";
         scratch["s"] = passwords[i].username;
         String sUser;
         serializeJson(scratch["s"], sUser);
-        file.print(sUser);
+        plaintext += sUser;
 
-        file.print(",\"password\":");
+        plaintext += ",\"password\":";
         scratch["s"] = passwords[i].password;
         String sPass;
         serializeJson(scratch["s"], sPass);
-        file.print(sPass);
+        plaintext += sPass;
 
         if (passwords[i].note.length() > 0) {
-            file.print(",\"note\":");
+            plaintext += ",\"note\":";
             scratch["s"] = passwords[i].note;
             String sNote;
             serializeJson(scratch["s"], sNote);
-            file.print(sNote);
+            plaintext += sNote;
         }
-        file.print("}");
-        if (i < count - 1) file.print(",");
-        file.print("\n");
+        plaintext += "}";
+        if (i < count - 1) plaintext += ",";
+        plaintext += "\n";
         yield();
     }
-    file.print("]}\n");
-    file.close();
+    plaintext += "]}\n";
+
+    std::vector<uint8_t> encrypted;
+    if (!CyberCrypto::seal(plaintext, "passwords", encrypted)) return false;
+
+    if (SD.exists(VAULT_TEMP_PATH) && !SD.remove(VAULT_TEMP_PATH)) return false;
+    File temp = SD.open(VAULT_TEMP_PATH, FILE_WRITE);
+    if (!temp || temp.write(encrypted.data(), encrypted.size()) != encrypted.size()) {
+        if (temp) temp.close();
+        SD.remove(VAULT_TEMP_PATH);
+        return false;
+    }
+    temp.close();
+
+    const bool hadOriginal = SD.exists(VAULT_JSON_PATH);
+    if (hadOriginal) {
+        if (SD.exists(VAULT_OLD_PATH) && !SD.remove(VAULT_OLD_PATH)) {
+            SD.remove(VAULT_TEMP_PATH);
+            return false;
+        }
+        if (!SD.rename(VAULT_JSON_PATH, VAULT_OLD_PATH)) {
+            SD.remove(VAULT_TEMP_PATH);
+            return false;
+        }
+    }
+
+    if (!SD.rename(VAULT_TEMP_PATH, VAULT_JSON_PATH)) {
+        if (hadOriginal) SD.rename(VAULT_OLD_PATH, VAULT_JSON_PATH);
+        SD.remove(VAULT_TEMP_PATH);
+        return false;
+    }
+    if (hadOriginal && !SD.remove(VAULT_OLD_PATH)) return false;
     return true;
 }
 
@@ -155,6 +211,7 @@ static void parseCSVRow(const String& line, std::vector<String>& fields) {
 }
 
 int CyberPassVault::importGoogleCSV(const String& csvText) {
+    if (!CyberCrypto::isReady()) return 0;
     if (csvText.length() == 0) return 0;
 
     int imported = 0;
@@ -235,13 +292,13 @@ int CyberPassVault::importGoogleCSV(const String& csvText) {
     }
 
     if (imported > 0) {
-        saveToSD();
+        if (!saveToSD()) return -1;
     }
     return imported;
 }
 
 int CyberPassVault::importCSVFile(File& file) {
-    if (!file) return 0;
+    if (!file || !CyberCrypto::isReady()) return 0;
 
     int imported = 0;
     bool isHeader = true;
@@ -315,19 +372,19 @@ int CyberPassVault::importCSVFile(File& file) {
     }
 
     if (imported > 0) {
-        saveToSD();
+        if (!saveToSD()) return -1;
     }
     return imported;
 }
 
 int CyberPassVault::importFromSDCSV() {
+    if (!CyberCrypto::isReady()) return 0;
     if (!SD.exists(VAULT_CSV_PATH)) return 0;
     File file = SD.open(VAULT_CSV_PATH, FILE_READ);
     if (!file) return 0;
     int imported = importCSVFile(file);
     file.close();
-    // Delete the CSV so we never repeatedly re-parse it on every subsequent boot
-    SD.remove(VAULT_CSV_PATH);
+    if (imported >= 0) SD.remove(VAULT_CSV_PATH);
     return imported;
 }
 
@@ -377,4 +434,6 @@ void CyberPassVault::wipe() {
     count = 0;
     if (SD.exists(VAULT_JSON_PATH)) SD.remove(VAULT_JSON_PATH);
     if (SD.exists(VAULT_CSV_PATH)) SD.remove(VAULT_CSV_PATH);
+    if (SD.exists(VAULT_TEMP_PATH)) SD.remove(VAULT_TEMP_PATH);
+    if (SD.exists(VAULT_OLD_PATH)) SD.remove(VAULT_OLD_PATH);
 }

@@ -7,6 +7,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <ctype.h>
 #include <SPI.h>
 #include <SD.h>
 #include <time.h>
@@ -16,8 +17,11 @@
 #include "CyberTOTP.h"
 #include "CyberTyping.h"
 #include "CyberPass.h"
+#include "CyberCrypto.h"
 #include "icon_data.h"
 #include "icon_web.h"
+#include <M5UnitUnified.h>
+#include <M5UnitUnifiedCRYPTO.h>
 
 #define MAX_ACCOUNTS 30
 #define MAX_WIFI 5
@@ -25,8 +29,9 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.0"
-#define OTA_VERSION_URL  "https://cyberkey.sndjy.us/version.json"
+#define FIRMWARE_VERSION "1.3.1"
+#define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
+static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
 String remoteOtaVersion = "";
 String remoteOtaBinUrl = "";
@@ -47,6 +52,41 @@ struct Account {
 struct WiFiCred {
     String ssid;
     String pass;
+};
+
+struct TimeZoneOption {
+    const char* id;
+    const char* label;
+    const char* posix;
+};
+
+static const TimeZoneOption TIME_ZONE_OPTIONS[] = {
+    {"UTC", "UTC", "UTC0"},
+    {"US/Eastern", "Eastern Time (US/New York)", "EST5EDT,M3.2.0,M11.1.0"},
+    {"US/Central", "Central Time (US/Chicago)", "CST6CDT,M3.2.0,M11.1.0"},
+    {"US/Mountain", "Mountain Time (US/Denver)", "MST7MDT,M3.2.0,M11.1.0"},
+    {"US/Arizona", "Arizona (no daylight saving)", "MST7"},
+    {"US/Pacific", "Pacific Time (US/Los Angeles)", "PST8PDT,M3.2.0,M11.1.0"},
+    {"US/Alaska", "Alaska", "AKST9AKDT,M3.2.0,M11.1.0"},
+    {"US/Hawaii", "Hawaii (no daylight saving)", "HST10"},
+    {"Canada/Atlantic", "Atlantic Time (Canada)", "AST4ADT,M3.2.0,M11.1.0"},
+    {"America/Mexico_City", "Mexico City", "CST6"},
+    {"America/Sao_Paulo", "Sao Paulo", "BRT3"},
+    {"America/Argentina/Buenos_Aires", "Buenos Aires", "ART3"},
+    {"Europe/London", "London", "GMT0BST,M3.5.0/1,M10.5.0/2"},
+    {"Europe/Paris", "Central European Time (Paris)", "CET-1CEST,M3.5.0/2,M10.5.0/3"},
+    {"Europe/Athens", "Eastern European Time (Athens)", "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+    {"Europe/Moscow", "Moscow", "MSK-3"},
+    {"Africa/Johannesburg", "Johannesburg", "SAST-2"},
+    {"Asia/Dubai", "Dubai", "GST-4"},
+    {"Asia/Kolkata", "Kolkata", "IST-5:30"},
+    {"Asia/Bangkok", "Bangkok", "ICT-7"},
+    {"Asia/Singapore", "Singapore", "SGT-8"},
+    {"Asia/Shanghai", "Beijing / Shanghai", "CST-8"},
+    {"Asia/Tokyo", "Tokyo", "JST-9"},
+    {"Australia/Perth", "Perth", "AWST-8"},
+    {"Australia/Sydney", "Sydney", "AEST-10AEDT,M10.1.0/2,M4.1.0/3"},
+    {"Pacific/Auckland", "Auckland", "NZST-12NZDT,M9.5.0/2,M4.1.0/3"},
 };
 
 Account accounts[MAX_ACCOUNTS];
@@ -78,6 +118,7 @@ bool isAPMode = false;
 bool timeSynced = false;
 bool beepEnabled = false;
 bool wifiSleeping = false;
+bool masterMigrationPending = false;
 String connectedSSID = "";
 String deviceIP = "";
 String statusMessage = "";
@@ -111,10 +152,10 @@ bool wipeConfirmActive = false;
 unsigned long wipeConfirmUntil = 0;
 
 // Forward declarations
-void loadAccounts();
-void saveAccounts();
-void loadWiFi();
-void saveWiFi();
+bool loadAccounts();
+bool saveAccounts();
+bool loadWiFi();
+bool saveWiFi();
 void loadSettings();
 void saveSettings();
 void applyTimezone();
@@ -127,6 +168,8 @@ void startCaptivePortal(bool silent = false);
 void connectWiFi(bool silent = false);
 void powerDownWiFi();
 bool ensureSD();
+bool runMasterPasswordGate();
+bool runMasterDataMigration();
 bool backupToSD(bool force = false);
 bool parseAndApplyBackupJSON(const String& jsonContent);
 bool restoreFromSD();
@@ -135,8 +178,6 @@ void handleKeyPress(char key);
 void sendTOTPKeyboard(uint32_t code);
 void checkForOTAUpdates(bool notify = false);
 void performOTAUpdate();
-
-static const char* OTA_LAN_URL = "http://192.168.5.55:8099/version.json";
 
 void checkForOTAUpdates(bool notify) {
     if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) {
@@ -147,61 +188,71 @@ void checkForOTAUpdates(bool notify) {
         return;
     }
 
+    otaUpdateAvailable = false;
+    remoteOtaVersion = "";
+    remoteOtaBinUrl = "";
+
     HTTPClient http;
-    http.setTimeout(2500);
-    bool success = false;
-    String payload = "";
-
-    // 1. Try instant LAN HTTP check directly to host server
-    if (http.begin(OTA_LAN_URL)) {
-        int code = http.GET();
-        if (code == HTTP_CODE_OK) {
-            payload = http.getString();
-            success = true;
-        }
-        http.end();
-    }
-
-    // 2. Fallback to public domain HTTPS if not at home
-    if (!success) {
-        WiFiClientSecure secureClient;
-        secureClient.setInsecure();
-        http.setTimeout(5000);
-        if (http.begin(secureClient, OTA_VERSION_URL)) {
-            int code = http.GET();
-            if (code == HTTP_CODE_OK) {
-                payload = http.getString();
-                success = true;
-            } else if (notify) {
-                statusMessage = "OTA HTTP: " + String(code);
-                statusMsgUntil = millis() + 3000;
-            }
-            http.end();
-        } else if (notify) {
-            statusMessage = "Conn Failed: -1";
+    WiFiClientSecure secureClient;
+    secureClient.setInsecure();
+    http.setTimeout(8000);
+    if (!http.begin(secureClient, OTA_VERSION_URL)) {
+        if (notify) {
+            statusMessage = "GitHub OTA connection failed";
             statusMsgUntil = millis() + 3000;
         }
+        return;
     }
 
-    if (success && payload.length() > 0) {
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, payload);
-        if (!err) {
-            const char* ver = doc["version"];
-            const char* url = doc["bin_url"];
-            if (ver && url) {
-                remoteOtaVersion = String(ver);
-                remoteOtaBinUrl = String(url);
-                if (remoteOtaVersion != FIRMWARE_VERSION) {
-                    otaUpdateAvailable = true;
-                    statusMessage = "Update " + remoteOtaVersion + " Avail!";
-                    statusMsgUntil = millis() + 4000;
-                } else if (notify) {
-                    statusMessage = "Up-to-date (v" + String(FIRMWARE_VERSION) + ")";
-                    statusMsgUntil = millis() + 2500;
-                }
-            }
+    const int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        http.end();
+        if (notify) {
+            statusMessage = "GitHub OTA HTTP: " + String(httpCode);
+            statusMsgUntil = millis() + 3000;
         }
+        return;
+    }
+
+    const String payload = http.getString();
+    http.end();
+    if (payload.length() == 0) {
+        if (notify) {
+            statusMessage = "Empty GitHub OTA manifest";
+            statusMsgUntil = millis() + 3000;
+        }
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) {
+        if (notify) {
+            statusMessage = "Invalid GitHub OTA manifest";
+            statusMsgUntil = millis() + 3000;
+        }
+        return;
+    }
+
+    const char* version = doc["version"];
+    const char* binUrl = doc["bin_url"];
+    if (!version || !binUrl || String(version).length() == 0 ||
+        !String(binUrl).startsWith(OTA_RELEASE_URL_PREFIX)) {
+        if (notify) {
+            statusMessage = "Invalid GitHub OTA release URL";
+            statusMsgUntil = millis() + 3000;
+        }
+        return;
+    }
+
+    remoteOtaVersion = version;
+    remoteOtaBinUrl = binUrl;
+    if (remoteOtaVersion != FIRMWARE_VERSION) {
+        otaUpdateAvailable = true;
+        statusMessage = "Update " + remoteOtaVersion + " Avail!";
+        statusMsgUntil = millis() + 4000;
+    } else if (notify) {
+        statusMessage = "Up-to-date (v" + String(FIRMWARE_VERSION) + ")";
+        statusMsgUntil = millis() + 2500;
     }
 }
 
@@ -237,36 +288,27 @@ void performOTAUpdate() {
     canvas.setTextDatum(middle_center);
     canvas.drawString("CyberKey OTA Update", 120, 30, 2);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    canvas.drawString("Connecting to update server...", 120, 60, 1);
+    canvas.drawString("Connecting to GitHub release...", 120, 60, 1);
     canvas.drawString("DO NOT POWER OFF", 120, 85, 2);
     canvas.pushSprite(0, 0);
 
-    // Try LAN direct streaming first (ultra fast, rock solid)
-    String targetUrl = "http://192.168.5.55:8099/CyberKey-app.bin";
+    if (remoteOtaBinUrl.length() == 0) {
+        checkForOTAUpdates(false);
+    }
+    if (!remoteOtaBinUrl.startsWith(OTA_RELEASE_URL_PREFIX)) {
+        statusMessage = "No GitHub release URL";
+        statusMsgUntil = millis() + 3000;
+        return;
+    }
+
+    const String targetUrl = remoteOtaBinUrl;
     HTTPClient http;
-    http.setTimeout(3000);
-    bool useLan = false;
-
-    if (http.begin(targetUrl)) {
-        int code = http.sendRequest("HEAD");
-        if (code == 200) {
-            useLan = true;
-        }
-        http.end();
-    }
-
-    if (!useLan) {
-        targetUrl = remoteOtaBinUrl.length() > 0 ? remoteOtaBinUrl : "https://cyberkey.sndjy.us/CyberKey-app.bin";
-    }
-
-    WiFiClient client;
     WiFiClientSecure secureClient;
     secureClient.setInsecure();
-
-    if (targetUrl.startsWith("https://")) {
-        http.begin(secureClient, targetUrl);
-    } else {
-        http.begin(client, targetUrl);
+    if (!http.begin(secureClient, targetUrl)) {
+        statusMessage = "GitHub release connection failed";
+        statusMsgUntil = millis() + 3000;
+        return;
     }
 
     http.setTimeout(15000);
@@ -377,22 +419,453 @@ void fetchWeather() {
     }
 }
 
+bool readMasterConfig(std::vector<uint8_t>& passwordWrapper, std::vector<uint8_t>& recoveryWrapper,
+                      bool& configured, bool& migrationDone) {
+    configured = false;
+    migrationDone = false;
+    prefs.begin("ck_master", true);
+    if (!prefs.isKey("active")) {
+        const bool hasPartialConfig = prefs.isKey("pw0") || prefs.isKey("rc0") ||
+                                      prefs.isKey("mig0") || prefs.isKey("pw1") ||
+                                      prefs.isKey("rc1") || prefs.isKey("mig1");
+        const bool slot0Complete = prefs.getBytesLength("pw0") > 0 &&
+                                   prefs.getBytesLength("rc0") > 0 && prefs.isKey("mig0");
+        const bool slot1Complete = prefs.getBytesLength("pw1") > 0 &&
+                                   prefs.getBytesLength("rc1") > 0 && prefs.isKey("mig1");
+        const uint8_t recoverSlot = slot0Complete != slot1Complete
+                                        ? static_cast<uint8_t>(slot0Complete ? 0 : 1)
+                                        : 2;
+        prefs.end();
+        if (recoverSlot < 2) {
+            prefs.begin("ck_master", false);
+            const bool recovered = prefs.putUChar("active", recoverSlot) > 0;
+            prefs.end();
+            if (!recovered) return false;
+            return readMasterConfig(passwordWrapper, recoveryWrapper, configured, migrationDone);
+        }
+        return !hasPartialConfig;
+    }
+
+    const uint8_t slot = prefs.getUChar("active", 2);
+    if (slot > 1) {
+        prefs.end();
+        return false;
+    }
+    const String passwordKey = "pw" + String(slot);
+    const String recoveryKey = "rc" + String(slot);
+    const String migrationKey = "mig" + String(slot);
+    const size_t passwordLength = prefs.getBytesLength(passwordKey.c_str());
+    const size_t recoveryLength = prefs.getBytesLength(recoveryKey.c_str());
+    if (passwordLength == 0 || recoveryLength == 0) {
+        prefs.end();
+        return false;
+    }
+
+    passwordWrapper.resize(passwordLength);
+    recoveryWrapper.resize(recoveryLength);
+    const bool loaded = prefs.getBytes(passwordKey.c_str(), passwordWrapper.data(), passwordLength) ==
+                            passwordLength &&
+                        prefs.getBytes(recoveryKey.c_str(), recoveryWrapper.data(), recoveryLength) ==
+                            recoveryLength;
+    migrationDone = prefs.getBool(migrationKey.c_str(), false);
+    prefs.end();
+    configured = loaded;
+    return loaded;
+}
+
+bool storeMasterConfig(const std::vector<uint8_t>& passwordWrapper,
+                       const std::vector<uint8_t>& recoveryWrapper, bool migrationDone) {
+    if (passwordWrapper.empty() || recoveryWrapper.empty()) return false;
+
+    prefs.begin("ck_master", false);
+    const bool hasActive = prefs.isKey("active");
+    const uint8_t oldSlot = prefs.getUChar("active", 2);
+    if (hasActive && oldSlot > 1) {
+        prefs.end();
+        return false;
+    }
+    const uint8_t newSlot = hasActive ? static_cast<uint8_t>(oldSlot ^ 1U) : 0;
+    const String passwordKey = "pw" + String(newSlot);
+    const String recoveryKey = "rc" + String(newSlot);
+    const String migrationKey = "mig" + String(newSlot);
+    bool stored = prefs.putBytes(passwordKey.c_str(), passwordWrapper.data(), passwordWrapper.size()) ==
+                      passwordWrapper.size() &&
+                  prefs.putBytes(recoveryKey.c_str(), recoveryWrapper.data(), recoveryWrapper.size()) ==
+                      recoveryWrapper.size() &&
+                  prefs.putBool(migrationKey.c_str(), migrationDone) > 0;
+    if (stored) stored = prefs.putUChar("active", newSlot) > 0;
+    prefs.end();
+
+    if (!stored && !hasActive) {
+        prefs.begin("ck_master", false);
+        const String failedPasswordKey = "pw" + String(newSlot);
+        const String failedRecoveryKey = "rc" + String(newSlot);
+        const String failedMigrationKey = "mig" + String(newSlot);
+        if (prefs.isKey(failedPasswordKey.c_str())) prefs.remove(failedPasswordKey.c_str());
+        if (prefs.isKey(failedRecoveryKey.c_str())) prefs.remove(failedRecoveryKey.c_str());
+        if (prefs.isKey(failedMigrationKey.c_str())) prefs.remove(failedMigrationKey.c_str());
+        prefs.end();
+    }
+
+    if (stored && hasActive) {
+        prefs.begin("ck_master", false);
+        const String oldPasswordKey = "pw" + String(oldSlot);
+        const String oldRecoveryKey = "rc" + String(oldSlot);
+        const String oldMigrationKey = "mig" + String(oldSlot);
+        bool removed = true;
+        if (prefs.isKey(oldPasswordKey.c_str())) removed = prefs.remove(oldPasswordKey.c_str()) && removed;
+        if (prefs.isKey(oldRecoveryKey.c_str())) removed = prefs.remove(oldRecoveryKey.c_str()) && removed;
+        if (prefs.isKey(oldMigrationKey.c_str())) removed = prefs.remove(oldMigrationKey.c_str()) && removed;
+        prefs.end();
+        if (!removed) {
+            statusMessage = "Old master wrapper cleanup failed";
+            statusMsgUntil = millis() + 5000;
+        }
+    }
+    return stored;
+}
+
+bool setMasterMigrationComplete(bool complete) {
+    prefs.begin("ck_master", false);
+    const uint8_t slot = prefs.getUChar("active", 2);
+    if (slot > 1) {
+        prefs.end();
+        return false;
+    }
+    const String migrationKey = "mig" + String(slot);
+    const bool saved = prefs.putBool(migrationKey.c_str(), complete) > 0;
+    prefs.end();
+    return saved;
+}
+
+String readStartupSecret(const String& prompt, size_t maxLength) {
+    String input;
+    bool redraw = true;
+    while (true) {
+        M5Cardputer.update();
+        if (redraw) {
+            M5Cardputer.Display.fillScreen(TFT_BLACK);
+            M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+            M5Cardputer.Display.setTextDatum(middle_center);
+            M5Cardputer.Display.setTextSize(1.5);
+            M5Cardputer.Display.drawString(prompt, 120, 24);
+            M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+            M5Cardputer.Display.setTextSize(2);
+            String masked;
+            for (size_t i = 0; i < input.length(); ++i) masked += '*';
+            M5Cardputer.Display.drawString(masked, 120, 62);
+            M5Cardputer.Display.setTextColor(0x7BEF, TFT_BLACK);
+            M5Cardputer.Display.setTextSize(1);
+            M5Cardputer.Display.drawString("Enter: accept   Del: erase", 120, 108);
+            M5Cardputer.Display.setTextDatum(top_left);
+            redraw = false;
+        }
+
+        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+            const Keyboard_Class::KeysState keys = M5Cardputer.Keyboard.keysState();
+            if (keys.enter) return input;
+            if (keys.del) {
+                if (input.length() > 0) input.remove(input.length() - 1);
+                redraw = true;
+            } else {
+                for (const char key : keys.word) {
+                    if (key >= 32 && key <= 126 && input.length() < maxLength) {
+                        input += key;
+                        redraw = true;
+                    }
+                }
+            }
+        }
+        delay(20);
+    }
+}
+
+void showStartupMessage(const String& title, const String& firstLine, const String& secondLine = "") {
+    M5Cardputer.Display.fillScreen(TFT_BLACK);
+    M5Cardputer.Display.setTextDatum(middle_center);
+    M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+    M5Cardputer.Display.setTextSize(2);
+    M5Cardputer.Display.drawString(title, 120, 30);
+    M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5Cardputer.Display.setTextSize(1);
+    M5Cardputer.Display.drawString(firstLine, 120, 67);
+    if (secondLine.length() > 0) M5Cardputer.Display.drawString(secondLine, 120, 89);
+    M5Cardputer.Display.setTextDatum(top_left);
+}
+
+void showRecoveryCode(const String& recoveryCode, const String& heading) {
+    M5Cardputer.Display.fillScreen(TFT_BLACK);
+    M5Cardputer.Display.setTextDatum(middle_center);
+    M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+    M5Cardputer.Display.setTextSize(2);
+    M5Cardputer.Display.drawString(heading, 120, 18);
+    M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5Cardputer.Display.drawString(recoveryCode.substring(0, 13), 120, 51);
+    M5Cardputer.Display.drawString(recoveryCode.substring(13), 120, 76);
+    M5Cardputer.Display.setTextColor(0x7BEF, TFT_BLACK);
+    M5Cardputer.Display.setTextSize(1);
+    M5Cardputer.Display.drawString("Write it down; Enter to continue", 120, 111);
+    M5Cardputer.Display.setTextDatum(top_left);
+    while (true) {
+        M5Cardputer.update();
+        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed() &&
+            M5Cardputer.Keyboard.keysState().enter) {
+            return;
+        }
+        delay(20);
+    }
+}
+
+bool waitForRecoveryChoice() {
+    showStartupMessage("Incorrect password", "Press R for recovery code", "Press Enter to retry");
+    while (true) {
+        M5Cardputer.update();
+        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+            const Keyboard_Class::KeysState keys = M5Cardputer.Keyboard.keysState();
+            if (keys.enter || keys.del) return false;
+            for (const char key : keys.word) {
+                if (tolower(static_cast<unsigned char>(key)) == 'r') return true;
+            }
+        }
+        delay(20);
+    }
+}
+
+bool confirmStartupReset() {
+    showStartupMessage("Master setup error", "Press Del twice to erase data", "Press Enter to retry");
+    while (true) {
+        M5Cardputer.update();
+        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+            const Keyboard_Class::KeysState keys = M5Cardputer.Keyboard.keysState();
+            if (keys.enter) return false;
+            if (keys.del) {
+                showStartupMessage("Confirm full wipe", "Press Del again within 5s");
+                const unsigned long started = millis();
+                while (millis() - started < 5000) {
+                    M5Cardputer.update();
+                    if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed() &&
+                        M5Cardputer.Keyboard.keysState().del) {
+                        return true;
+                    }
+                    delay(20);
+                }
+                return false;
+            }
+        }
+        delay(20);
+    }
+}
+
+bool migrateBackupFile(const char* path) {
+    if (!SD.exists(path)) return true;
+
+    File source = SD.open(path, FILE_READ);
+    if (!source) return false;
+    const size_t length = source.size();
+    std::vector<uint8_t> data(length + 1, 0);
+    const size_t bytesRead = source.read(data.data(), length);
+    source.close();
+    if (bytesRead != length) return false;
+    if (CyberCrypto::isMasterSealed(data.data(), length)) return true;
+
+    String plaintext;
+    if (CyberCrypto::isSealed(data.data(), length)) {
+        if (!CyberCrypto::open(data.data(), length, "backup", plaintext)) return false;
+    } else {
+        plaintext = String(reinterpret_cast<const char*>(data.data()));
+    }
+
+    std::vector<uint8_t> encrypted;
+    if (!CyberCrypto::seal(plaintext, "backup", encrypted)) return false;
+
+    const String tempPath = String(path) + ".migrate.tmp";
+    const String oldPath = String(path) + ".migrate.old";
+    if (SD.exists(tempPath.c_str()) && !SD.remove(tempPath.c_str())) return false;
+    if (SD.exists(oldPath.c_str())) {
+        if (!SD.exists(path)) {
+            if (!SD.rename(oldPath.c_str(), path)) return false;
+        } else if (!SD.remove(oldPath.c_str())) {
+            return false;
+        }
+    }
+
+    File temp = SD.open(tempPath.c_str(), FILE_WRITE);
+    if (!temp || temp.write(encrypted.data(), encrypted.size()) != encrypted.size()) {
+        if (temp) temp.close();
+        SD.remove(tempPath.c_str());
+        return false;
+    }
+    temp.close();
+
+    if (!SD.rename(path, oldPath.c_str())) {
+        SD.remove(tempPath.c_str());
+        return false;
+    }
+    if (!SD.rename(tempPath.c_str(), path)) {
+        SD.rename(oldPath.c_str(), path);
+        SD.remove(tempPath.c_str());
+        return false;
+    }
+    return SD.remove(oldPath.c_str());
+}
+
+bool runMasterDataMigration() {
+    if (!CyberCrypto::isReady() || !CyberCrypto::isUnlocked()) return false;
+    CyberCrypto::allowLegacyMigration(true);
+    loadSettings();
+    if (!loadAccounts() || !loadWiFi()) return false;
+    if (!saveAccounts() || !saveWiFi()) return false;
+
+    if (!ensureSD()) {
+        masterMigrationPending = true;
+        return true;
+    }
+
+    const bool hasPasswordVault = SD.exists("/passwords.json") || SD.exists("/passwords.csv") ||
+                                 SD.exists("/passwords.old");
+    if (hasPasswordVault && !CyberPassVault::init()) return false;
+    if (hasPasswordVault && !CyberPassVault::saveToSD()) return false;
+    if (!migrateBackupFile("/cyberkey_backup.json") ||
+        !migrateBackupFile("/cyberkey_backup.bak")) {
+        return false;
+    }
+
+    if (!setMasterMigrationComplete(true)) return false;
+    CyberCrypto::allowLegacyMigration(false);
+    masterMigrationPending = false;
+    return true;
+}
+
+bool runMasterPasswordGate() {
+    while (true) {
+        std::vector<uint8_t> passwordWrapper;
+        std::vector<uint8_t> recoveryWrapper;
+        bool configured = false;
+        bool migrationDone = false;
+        if (!readMasterConfig(passwordWrapper, recoveryWrapper, configured, migrationDone)) {
+            if (confirmStartupReset()) {
+                wipeAllData();
+                delay(700);
+                ESP.restart();
+            }
+            continue;
+        }
+
+        if (!configured) {
+            String password = readStartupSecret("Set master password", 64);
+            if (password.length() < 8) {
+                showStartupMessage("Password too short", "Use at least 8 characters");
+                delay(1200);
+                continue;
+            }
+            String confirmation = readStartupSecret("Confirm password", 64);
+            if (password != confirmation) {
+                showStartupMessage("Passwords do not match", "Try setting it again");
+                delay(1200);
+                continue;
+            }
+
+            String recoveryCode;
+            if (!CyberCrypto::generateRecoveryCode(recoveryCode)) {
+                showStartupMessage("Crypto Unit error", "Could not generate recovery code");
+                delay(1500);
+                continue;
+            }
+            showRecoveryCode(recoveryCode, "Recovery code");
+
+            if (!CyberCrypto::createMasterKey(password, recoveryCode, passwordWrapper, recoveryWrapper) ||
+                !storeMasterConfig(passwordWrapper, recoveryWrapper, false)) {
+                CyberCrypto::lock();
+                showStartupMessage("Master setup failed", "Check Crypto Unit and retry");
+                delay(1500);
+                continue;
+            }
+            CyberCrypto::allowLegacyMigration(true);
+            if (!runMasterDataMigration()) {
+                CyberCrypto::lock();
+                showStartupMessage("Data migration failed", "Check storage and restart");
+                delay(2000);
+                continue;
+            }
+            return true;
+        }
+
+        String password = readStartupSecret("Enter master password", 64);
+        if (!CyberCrypto::unlockMasterKey(password, passwordWrapper.data(), passwordWrapper.size())) {
+            if (!waitForRecoveryChoice()) continue;
+
+            String recoveryCode = readStartupSecret("Enter recovery code", 32);
+            if (!CyberCrypto::unlockMasterKeyWithRecovery(recoveryCode,
+                                                          recoveryWrapper.data(), recoveryWrapper.size())) {
+                showStartupMessage("Invalid recovery code", "Try again");
+                delay(1200);
+                continue;
+            }
+
+            String newPassword = readStartupSecret("Set new password", 64);
+            if (newPassword.length() < 8) {
+                CyberCrypto::lock();
+                showStartupMessage("Password too short", "Use at least 8 characters");
+                delay(1200);
+                continue;
+            }
+            String confirmation = readStartupSecret("Confirm new password", 64);
+            if (newPassword != confirmation) {
+                CyberCrypto::lock();
+                showStartupMessage("Passwords do not match", "Restart to use recovery again");
+                delay(1500);
+                continue;
+            }
+
+            String newRecoveryCode;
+            std::vector<uint8_t> newPasswordWrapper;
+            std::vector<uint8_t> newRecoveryWrapper;
+            if (!CyberCrypto::generateRecoveryCode(newRecoveryCode) ||
+                !CyberCrypto::rewrapMasterKey(newPassword, newRecoveryCode,
+                                              newPasswordWrapper, newRecoveryWrapper) ||
+                !storeMasterConfig(newPasswordWrapper, newRecoveryWrapper, migrationDone)) {
+                CyberCrypto::lock();
+                showStartupMessage("Password reset failed", "Restart and use recovery code");
+                delay(1500);
+                continue;
+            }
+            showRecoveryCode(newRecoveryCode, "New recovery code");
+        }
+
+        CyberCrypto::allowLegacyMigration(!migrationDone);
+        if (!migrationDone) {
+            if (!runMasterDataMigration()) {
+                CyberCrypto::lock();
+                showStartupMessage("Data migration failed", "Check storage and retry");
+                delay(2000);
+                continue;
+            }
+        } else {
+            masterMigrationPending = false;
+        }
+        return true;
+    }
+}
+
 void setup() {
     auto cfg = M5.config();
     cfg.internal_spk = true;
     cfg.internal_mic = false;
     M5Cardputer.begin(cfg, true);
-    M5Cardputer.Display.setRotation(1);
+    for (uint8_t rotation = 0; rotation < 4; ++rotation) {
+        M5Cardputer.Display.setRotation(rotation);
+        if (M5Cardputer.Display.width() == 240 && M5Cardputer.Display.height() == 135) {
+            break;
+        }
+    }
     M5Cardputer.Display.setBrightness(BRIGHTNESS_NORMAL);
+
+    CyberCrypto::begin();
 
     M5Cardputer.Speaker.setVolume(60);
 
-    // Initialize USB HID Keyboard Emulation
-    Keyboard.begin();
-    USB.begin();
-
     // Initialize flicker-free double buffer canvas
-    canvas.createSprite(240, 135);
+    canvas.createSprite(M5Cardputer.Display.width(), M5Cardputer.Display.height());
     canvas.setTextWrap(false);
 
     // Boot Logo & Splash
@@ -400,9 +873,29 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey 2FA v1.2.4 🚀", 120, 106, 2);
+    M5Cardputer.Display.drawString("CyberKey 2FA v1.3.1 🚀", 120, 106, 2);
     M5Cardputer.Display.setTextDatum(top_left);
     delay(1800);
+
+    unsigned long lastCryptoRetry = 0;
+    while (!CyberCrypto::isReady()) {
+        if (millis() - lastCryptoRetry >= 1500) {
+            lastCryptoRetry = millis();
+            showStartupMessage("Crypto Unit Required", "Connect it to Port A", "Retrying...");
+            CyberCrypto::begin();
+        }
+        M5Cardputer.update();
+        delay(20);
+    }
+
+    loadSettings();
+    while (!runMasterPasswordGate()) {
+        delay(250);
+    }
+
+    // Do not expose USB/BLE HID or start network services before the vault is unlocked.
+    Keyboard.begin();
+    USB.begin();
 
     M5Cardputer.Display.fillScreen(TFT_BLACK);
     M5Cardputer.Display.setTextColor(0x07E0, TFT_BLACK); // Bright Neon Green
@@ -410,14 +903,22 @@ void setup() {
     M5Cardputer.Display.println("CyberKey 2FA Vault");
     M5Cardputer.Display.println("------------------");
 
-    initBLEKeyboard();
-    loadSettings();
     applyTimezone();
-    loadAccounts();
-    if (ensureSD()) {
-        CyberPassVault::init();
+    if (!loadAccounts()) {
+        statusMessage = "Account Decryption Failed";
+        statusMsgUntil = millis() + 5000;
     }
-    loadWiFi();
+    if (ensureSD()) {
+        if (!CyberPassVault::init() && CyberCrypto::isReady() &&
+            (SD.exists("/passwords.json") || SD.exists("/passwords.csv"))) {
+            statusMessage = "Password Vault Load Failed";
+            statusMsgUntil = millis() + 5000;
+        }
+    }
+    if (!loadWiFi()) {
+        statusMessage = "WiFi Decryption Failed";
+        statusMsgUntil = millis() + 5000;
+    }
     connectWiFi();
     setupWebServer();
 
@@ -426,6 +927,43 @@ void setup() {
 
 void loop() {
     M5Cardputer.update();
+
+    static unsigned long lastCryptoCheck = 0;
+    if (millis() - lastCryptoCheck >= 3000) {
+        lastCryptoCheck = millis();
+        const bool wasReady = CyberCrypto::isReady();
+        const bool ready = CyberCrypto::refresh();
+        if (!wasReady && ready) {
+            statusMessage = "Crypto Unit Reconnected";
+            statusMsgUntil = millis() + 3000;
+            if (CyberCrypto::isUnlocked()) {
+                loadAccounts();
+                loadWiFi();
+                if (!wifiSleeping && WiFi.status() != WL_CONNECTED) {
+                    if (isAPMode) {
+                        dnsServer.stop();
+                        WiFi.softAPdisconnect(true);
+                        isAPMode = false;
+                    }
+                    connectWiFi(true);
+                }
+            }
+        }
+    }
+
+    static unsigned long lastMigrationCheck = 0;
+    if (masterMigrationPending && CyberCrypto::isReady() &&
+        millis() - lastMigrationCheck >= 5000) {
+        lastMigrationCheck = millis();
+        if (ensureSD()) {
+            if (runMasterDataMigration()) {
+                statusMessage = "Data Migration Complete";
+            } else {
+                statusMessage = "Data Migration Retry Failed";
+            }
+            statusMsgUntil = millis() + 3000;
+        }
+    }
 
     if (isAPMode) {
         dnsServer.processNextRequest();
@@ -468,6 +1006,8 @@ void loop() {
                 wipeConfirmActive = false;
                 statusMessage = "VAULT WIPED CLEAN!";
                 statusMsgUntil = millis() + 3000;
+                delay(700);
+                ESP.restart();
             }
         } else if (status.enter) {
             // USB Auto-Type TOTP
@@ -510,8 +1050,8 @@ void loop() {
         }
     }
 
-    // Auto-resync NTP if time is before year 2024
-    if (now < 1704067200 && WiFi.isConnected() && !isAPMode) {
+    // Retry NTP while time is unsynchronized, even if the device has a stale RTC value.
+    if ((!timeSynced || now < 1704067200) && WiFi.isConnected() && !isAPMode) {
         static unsigned long lastNtpTry = 0;
         if (millis() - lastNtpTry > 5000) {
             lastNtpTry = millis();
@@ -613,6 +1153,12 @@ void handleKeyPress(char key) {
         autoTypeUsername();
     } else if (key == 'p' || key == 'P') { // Type Password
         autoTypePassword();
+    } else if (key == 'l' || key == 'L') { // Toggle Bluetooth HID
+        const bool enabled = !isBLEKeyboardEnabled();
+        statusMessage = setBLEKeyboardEnabled(enabled)
+                            ? (enabled ? "BLE HID: ON" : "BLE HID: OFF")
+                            : "BLE HID toggle failed";
+        statusMsgUntil = millis() + 2000;
     } else if (key == 'm' || key == 'M') { // Toggle Mute / Beep
         beepEnabled = !beepEnabled;
         statusMessage = beepEnabled ? "Chirp: ON" : "Chirp: OFF";
@@ -631,7 +1177,9 @@ void handleKeyPress(char key) {
             statusMessage = "Wi-Fi: Sleep (Batt Save)";
             statusMsgUntil = millis() + 2500;
         }
-    } else if (((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) && key != 'o' && key != 'O' && key != 'u' && key != 'U' && key != 'p' && key != 'P') {
+    } else if (((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) &&
+               key != 'o' && key != 'O' && key != 'u' && key != 'U' &&
+               key != 'p' && key != 'P' && key != 'l' && key != 'L') {
         // Quick Jump / Search by first letter of Issuer (or Name)
         char target = tolower(key);
         for (int i = 0; i < accountCount; ++i) {
@@ -647,6 +1195,10 @@ void handleKeyPress(char key) {
     }
 }
 
+template <typename Display>
+void drawScrollingText(Display& display, const char* text, int32_t x, int32_t y, int32_t maxWidth,
+                       uint8_t font, float textSize, bool centerX = false, bool centerY = false);
+
 void drawStandbyScreen(time_t now) {
     canvas.fillScreen(TFT_BLACK);
 
@@ -660,8 +1212,7 @@ void drawStandbyScreen(time_t now) {
     snprintf(dateStr, sizeof(dateStr), "%s, %s %d", days[timeinfo.tm_wday], months[timeinfo.tm_mon], timeinfo.tm_mday);
 
     canvas.setTextColor(0x7BEF, TFT_BLACK);
-    canvas.setTextDatum(top_center);
-    canvas.drawString(dateStr, 120, 8, 2);
+    drawScrollingText(canvas, dateStr, 10, 8, 220, 2, 1, true);
 
     // Big Digital Clock (Center)
     char timeStr[16];
@@ -693,12 +1244,11 @@ void drawStandbyScreen(time_t now) {
         char wStr[40];
         snprintf(wStr, sizeof(wStr), "%.0f`%s  %s", currentWeatherTemp, weatherUnits == "fahrenheit" ? "F" : "C", currentWeatherDesc.c_str());
         canvas.setTextColor(TFT_WHITE, 0x10A2);
-        canvas.setTextDatum(middle_center);
-        canvas.drawString(wStr, 120, 99, 2);
+        drawScrollingText(canvas, wStr, 16, 99, 208, 2, 1, true, true);
     } else {
         canvas.setTextColor(0x7BEF, 0x10A2);
-        canvas.setTextDatum(middle_center);
-        canvas.drawString(WiFi.isConnected() ? "Weather syncing..." : weatherCity.c_str(), 120, 99, 2);
+        drawScrollingText(canvas, WiFi.isConnected() ? "Weather syncing..." : weatherCity.c_str(),
+                          16, 99, 208, 2, 1, true, true);
     }
 
     // Subtle bottom bar: Battery & Wake hint
@@ -706,11 +1256,57 @@ void drawStandbyScreen(time_t now) {
     char bStr[32];
     snprintf(bStr, sizeof(bStr), "BAT: %d%% | Press any key for 2FA", batt);
     canvas.setTextColor(0x52AA, TFT_BLACK);
-    canvas.setTextDatum(top_center);
-    canvas.drawString(bStr, 120, 118, 1);
+    drawScrollingText(canvas, bStr, 6, 118, 228, 1, 1, true);
     canvas.setTextDatum(top_left); // Reset datum
 
     canvas.pushSprite(0, 0);
+}
+
+template <typename Display>
+void drawScrollingText(Display& display, const char* text, int32_t x, int32_t y, int32_t maxWidth,
+                       uint8_t font, float textSize, bool centerX, bool centerY) {
+    if (!text || text[0] == '\0' || maxWidth <= 0) return;
+
+    const lgfx::v1::IFont* previousFont = display.getFont();
+    const float previousSizeX = display.getTextSizeX();
+    const float previousSizeY = display.getTextSizeY();
+    const lgfx::v1::textdatum_t previousDatum = display.getTextDatum();
+
+    display.setFont(lgfx::v1::fontdata[font]);
+    display.setTextSize(textSize);
+    display.setTextDatum(lgfx::v1::textdatum_t::top_left);
+
+    const int32_t textWidth = display.textWidth(text);
+    const int32_t textHeight = display.fontHeight();
+    const int32_t top = centerY ? y - textHeight / 2 : y;
+
+    if (textWidth <= maxWidth) {
+        const int32_t left = centerX ? x + (maxWidth - textWidth) / 2 : x;
+        display.drawString(text, left, top);
+    } else {
+        constexpr int32_t gap = 24;
+        constexpr uint32_t scrollSpeedMsPerPixel = 35;
+        constexpr uint32_t pauseMs = 850;
+        const int32_t travelPixels = textWidth + gap;
+        const uint32_t travel = static_cast<uint32_t>(travelPixels);
+        const uint32_t movementDuration = travel * scrollSpeedMsPerPixel;
+        const uint32_t cycleDuration = 2 * pauseMs + movementDuration;
+        const uint32_t phase = millis() % cycleDuration;
+        const int32_t offset = phase < pauseMs
+                                   ? 0
+                                   : phase < pauseMs + movementDuration
+                                         ? static_cast<int32_t>((phase - pauseMs) / scrollSpeedMsPerPixel)
+                                         : static_cast<int32_t>(travel);
+
+        display.setClipRect(x, top, maxWidth, textHeight);
+        display.drawString(text, x - offset, top);
+        display.drawString(text, x - offset + travelPixels, top);
+        display.clearClipRect();
+    }
+
+    display.setTextDatum(previousDatum);
+    display.setFont(previousFont);
+    display.setTextSize(previousSizeX, previousSizeY);
 }
 
 void drawUI(uint32_t code, int remaining, time_t now) {
@@ -741,11 +1337,11 @@ void drawUI(uint32_t code, int remaining, time_t now) {
         canvas.print(WiFi.isConnected() ? deviceIP : "No WiFi [W]");
     }
 
-    // BLE status badge on header
-    if (isBLEConnected()) {
-        canvas.fillRect(138, 4, 17, 12, 0x001F);
+    // BLE HID status badge on header
+    if (isBLEKeyboardEnabled()) {
+        canvas.fillRect(136, 4, 18, 12, 0x001F);
         canvas.setTextColor(TFT_WHITE, 0x001F);
-        canvas.drawString("BT", 140, 6, 1);
+        canvas.drawString(isBLEConnected() ? "BT" : "BLE", 137, 6, 1);
     }
 
     // Display Local Time on header
@@ -771,9 +1367,7 @@ void drawUI(uint32_t code, int remaining, time_t now) {
             canvas.fillRoundRect(8, 24, 224, 22, 5, 0x02CD);
             canvas.drawRoundRect(8, 24, 224, 22, 5, TFT_CYAN);
             canvas.setTextColor(TFT_WHITE, 0x02CD);
-            canvas.setTextDatum(middle_center);
-            canvas.drawString(statusMessage.c_str(), 120, 35, 2);
-            canvas.setTextDatum(top_left);
+            drawScrollingText(canvas, statusMessage.c_str(), 14, 35, 212, 2, 1, true, true);
         }
 
         canvas.pushSprite(0, 0);
@@ -796,9 +1390,7 @@ void drawUI(uint32_t code, int remaining, time_t now) {
             canvas.fillRoundRect(8, 24, 224, 22, 5, 0x02CD);
             canvas.drawRoundRect(8, 24, 224, 22, 5, TFT_CYAN);
             canvas.setTextColor(TFT_WHITE, 0x02CD);
-            canvas.setTextDatum(middle_center);
-            canvas.drawString(statusMessage.c_str(), 120, 35, 2);
-            canvas.setTextDatum(top_left);
+            drawScrollingText(canvas, statusMessage.c_str(), 14, 35, 212, 2, 1, true, true);
         }
 
         canvas.pushSprite(0, 0);
@@ -807,12 +1399,9 @@ void drawUI(uint32_t code, int remaining, time_t now) {
 
     // Line 1: Primary Site / Issuer Name (Large Cyan)
     canvas.setTextColor(TFT_CYAN, TFT_BLACK);
-    canvas.setTextSize(2);
-    canvas.setCursor(8, 24);
     String issuer = accounts[currentIndex].issuer;
     if (issuer.length() == 0) issuer = accounts[currentIndex].name;
-    if (issuer.length() > 14) issuer = issuer.substring(0, 14);
-    canvas.print(issuer);
+    drawScrollingText(canvas, issuer.c_str(), 8, 24, 180, 1, 2);
 
     // Account Counter (e.g. [1/5])
     canvas.setTextSize(1);
@@ -823,11 +1412,9 @@ void drawUI(uint32_t code, int remaining, time_t now) {
     // Line 2: Sub-Account / Username (Small Muted Gray/Cyan)
     canvas.setTextSize(1);
     canvas.setTextColor(0x9E79, TFT_BLACK);
-    canvas.setCursor(8, 43);
     String username = accounts[currentIndex].name;
     if (accounts[currentIndex].issuer.length() > 0 && username.length() > 0) {
-        if (username.length() > 32) username = username.substring(0, 32);
-        canvas.print(username);
+        drawScrollingText(canvas, username.c_str(), 8, 43, 224, 1, 1);
     }
 
     // 6-digit Code (Big Bright Green Text)
@@ -863,42 +1450,98 @@ void drawUI(uint32_t code, int remaining, time_t now) {
         canvas.fillRoundRect(8, 22, 224, 24, 5, wipeConfirmActive ? 0xA000 : 0x02CD);
         canvas.drawRoundRect(8, 22, 224, 24, 5, wipeConfirmActive ? TFT_RED : TFT_CYAN);
         canvas.setTextColor(TFT_WHITE, wipeConfirmActive ? 0xA000 : 0x02CD);
-        canvas.setTextDatum(middle_center);
-        canvas.drawString(statusMessage.c_str(), 120, 34, 2);
-        canvas.setTextDatum(top_left);
+        drawScrollingText(canvas, statusMessage.c_str(), 14, 34, 212, 2, 1, true, true);
     }
 
     canvas.pushSprite(0, 0);
 }
 
-void loadAccounts() {
-    prefs.begin("cyberkey", true);
-    accountCount = prefs.getInt("count", 0);
-    if (accountCount > MAX_ACCOUNTS) accountCount = MAX_ACCOUNTS;
+bool loadAccounts() {
+    accountCount = 0;
+    if (!CyberCrypto::isReady()) return false;
 
-    for (int i = 0; i < accountCount; ++i) {
-        String nKey = "n" + String(i);
-        String sKey = "s" + String(i);
-        String isKey = "is" + String(i);
-        accounts[i].name = prefs.getString(nKey.c_str(), "Account");
-        accounts[i].secret = prefs.getString(sKey.c_str(), "");
-        accounts[i].issuer = prefs.getString(isKey.c_str(), "");
+    prefs.begin("cyberkey", true);
+    bool hasEncryptedData = prefs.isKey("sealed");
+    std::vector<uint8_t> encrypted;
+    if (hasEncryptedData) {
+        size_t length = prefs.getBytesLength("sealed");
+        encrypted.resize(length);
+        if (length > 0) prefs.getBytes("sealed", encrypted.data(), length);
+    } else {
+        accountCount = prefs.getInt("count", 0);
+        if (accountCount > MAX_ACCOUNTS) accountCount = MAX_ACCOUNTS;
+        for (int i = 0; i < accountCount; ++i) {
+            String nKey = "n" + String(i);
+            String sKey = "s" + String(i);
+            String isKey = "is" + String(i);
+            accounts[i].name = prefs.getString(nKey.c_str(), "Account");
+            accounts[i].secret = prefs.getString(sKey.c_str(), "");
+            accounts[i].issuer = prefs.getString(isKey.c_str(), "");
+        }
     }
     prefs.end();
+
+    if (hasEncryptedData) {
+        String plaintext;
+        JsonDocument doc;
+        if (!CyberCrypto::open(encrypted.data(), encrypted.size(), "accounts", plaintext) ||
+            deserializeJson(doc, plaintext)) {
+            statusMessage = "Account Decryption Failed";
+            statusMsgUntil = millis() + 5000;
+            return false;
+        }
+        JsonArray arr = doc["accounts"].as<JsonArray>();
+        for (JsonObject obj : arr) {
+            if (accountCount >= MAX_ACCOUNTS) break;
+            accounts[accountCount].issuer = obj["issuer"].as<String>();
+            accounts[accountCount].name = obj["name"].as<String>();
+            accounts[accountCount].secret = obj["secret"].as<String>();
+            accountCount++;
+        }
+    }
+    return true;
 }
 
-void saveAccounts() {
-    prefs.begin("cyberkey", false);
-    prefs.putInt("count", accountCount);
+bool saveAccounts() {
+    if (!CyberCrypto::isReady()) return false;
+
+    JsonDocument doc;
+    JsonArray arr = doc["accounts"].to<JsonArray>();
     for (int i = 0; i < accountCount; ++i) {
-        String nKey = "n" + String(i);
-        String sKey = "s" + String(i);
-        String isKey = "is" + String(i);
-        prefs.putString(nKey.c_str(), accounts[i].name);
-        prefs.putString(sKey.c_str(), accounts[i].secret);
-        prefs.putString(isKey.c_str(), accounts[i].issuer);
+        JsonObject obj = arr.add<JsonObject>();
+        obj["issuer"] = accounts[i].issuer;
+        obj["name"] = accounts[i].name;
+        obj["secret"] = accounts[i].secret;
+    }
+    String plaintext;
+    serializeJson(doc, plaintext);
+    std::vector<uint8_t> encrypted;
+    if (!CyberCrypto::seal(plaintext, "accounts", encrypted)) {
+        statusMessage = "Account Encryption Failed";
+        statusMsgUntil = millis() + 5000;
+        return false;
+    }
+
+    prefs.begin("cyberkey", false);
+    bool saved = prefs.putBytes("sealed", encrypted.data(), encrypted.size()) == encrypted.size();
+    if (saved) {
+        bool removed = !prefs.isKey("count") || prefs.remove("count");
+        for (int i = 0; i < MAX_ACCOUNTS; ++i) {
+            String nameKey = "n" + String(i);
+            String secretKey = "s" + String(i);
+            String issuerKey = "is" + String(i);
+            if (prefs.isKey(nameKey.c_str())) removed = prefs.remove(nameKey.c_str()) && removed;
+            if (prefs.isKey(secretKey.c_str())) removed = prefs.remove(secretKey.c_str()) && removed;
+            if (prefs.isKey(issuerKey.c_str())) removed = prefs.remove(issuerKey.c_str()) && removed;
+        }
+        saved = removed;
     }
     prefs.end();
+    if (!saved) {
+        statusMessage = "Account Save Failed";
+        statusMsgUntil = millis() + 5000;
+    }
+    return saved;
 }
 
 void loadSettings() {
@@ -929,36 +1572,103 @@ void saveSettings() {
     prefs.end();
 }
 
-void loadWiFi() {
-    prefs.begin("ck_wifi", true);
-    wifiCount = prefs.getInt("w_count", 0);
-    if (wifiCount > MAX_WIFI) wifiCount = MAX_WIFI;
+bool loadWiFi() {
+    wifiCount = 0;
+    if (!CyberCrypto::isReady()) return false;
 
-    if (wifiCount == 0 && prefs.isKey("ssid")) {
-        String oldSSID = prefs.getString("ssid", "");
-        String oldPass = prefs.getString("pass", "");
-        if (oldSSID.length() > 0) {
-            wifiList[0].ssid = oldSSID;
-            wifiList[0].pass = oldPass;
-            wifiCount = 1;
-        }
+    prefs.begin("ck_wifi", true);
+    bool hasEncryptedData = prefs.isKey("sealed");
+    std::vector<uint8_t> encrypted;
+    if (hasEncryptedData) {
+        size_t length = prefs.getBytesLength("sealed");
+        encrypted.resize(length);
+        if (length > 0) prefs.getBytes("sealed", encrypted.data(), length);
     } else {
-        for (int i = 0; i < wifiCount; ++i) {
-            wifiList[i].ssid = prefs.getString(("ws" + String(i)).c_str(), "");
-            wifiList[i].pass = prefs.getString(("wp" + String(i)).c_str(), "");
+        wifiCount = prefs.getInt("w_count", 0);
+        if (wifiCount > MAX_WIFI) wifiCount = MAX_WIFI;
+
+        if (wifiCount == 0 && prefs.isKey("ssid")) {
+            String oldSSID = prefs.getString("ssid", "");
+            String oldPass = prefs.getString("pass", "");
+            if (oldSSID.length() > 0) {
+                wifiList[0].ssid = oldSSID;
+                wifiList[0].pass = oldPass;
+                wifiCount = 1;
+            }
+        } else {
+            for (int i = 0; i < wifiCount; ++i) {
+                wifiList[i].ssid = prefs.getString(("ws" + String(i)).c_str(), "");
+                wifiList[i].pass = prefs.getString(("wp" + String(i)).c_str(), "");
+            }
         }
     }
     prefs.end();
+
+    if (hasEncryptedData) {
+        String plaintext;
+        JsonDocument doc;
+        if (!CyberCrypto::open(encrypted.data(), encrypted.size(), "wifi", plaintext) ||
+            deserializeJson(doc, plaintext)) {
+            statusMessage = "WiFi Decryption Failed";
+            statusMsgUntil = millis() + 5000;
+            return false;
+        }
+        JsonArray arr = doc["wifi"].as<JsonArray>();
+        for (JsonObject obj : arr) {
+            if (wifiCount >= MAX_WIFI) break;
+            wifiList[wifiCount].ssid = obj["ssid"].as<String>();
+            wifiList[wifiCount].pass = obj["pass"].as<String>();
+            wifiCount++;
+        }
+    }
+    return true;
 }
 
-void saveWiFi() {
-    prefs.begin("ck_wifi", false);
-    prefs.putInt("w_count", wifiCount);
+bool saveWiFi() {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        statusMsgUntil = millis() + 5000;
+        return false;
+    }
+
+    JsonDocument doc;
+    JsonArray arr = doc["wifi"].to<JsonArray>();
     for (int i = 0; i < wifiCount; ++i) {
-        prefs.putString(("ws" + String(i)).c_str(), wifiList[i].ssid);
-        prefs.putString(("wp" + String(i)).c_str(), wifiList[i].pass);
+        JsonObject obj = arr.add<JsonObject>();
+        obj["ssid"] = wifiList[i].ssid;
+        obj["pass"] = wifiList[i].pass;
+    }
+    String plaintext;
+    serializeJson(doc, plaintext);
+    std::vector<uint8_t> encrypted;
+    if (!CyberCrypto::seal(plaintext, "wifi", encrypted)) {
+        statusMessage = "WiFi Encryption Failed";
+        statusMsgUntil = millis() + 5000;
+        return false;
+    }
+
+    prefs.begin("ck_wifi", false);
+    bool saved = prefs.putBytes("sealed", encrypted.data(), encrypted.size()) == encrypted.size();
+    if (saved) {
+        bool removed = true;
+        const char* legacyKeys[] = {"w_count", "ssid", "pass"};
+        for (const char* key : legacyKeys) {
+            if (prefs.isKey(key)) removed = prefs.remove(key) && removed;
+        }
+        for (int i = 0; i < MAX_WIFI; ++i) {
+            String ssidKey = "ws" + String(i);
+            String passwordKey = "wp" + String(i);
+            if (prefs.isKey(ssidKey.c_str())) removed = prefs.remove(ssidKey.c_str()) && removed;
+            if (prefs.isKey(passwordKey.c_str())) removed = prefs.remove(passwordKey.c_str()) && removed;
+        }
+        saved = removed;
     }
     prefs.end();
+    if (!saved) {
+        statusMessage = "WiFi Save Failed";
+        statusMsgUntil = millis() + 5000;
+    }
+    return saved;
 }
 
 void wipeAllData() {
@@ -974,11 +1684,33 @@ void wipeAllData() {
     prefs.clear();
     prefs.end();
 
+    prefs.begin("ck_master", false);
+    prefs.clear();
+    prefs.end();
+
     accountCount = 0;
     currentIndex = 0;
     wifiCount = 0;
     connectedSSID = "";
-    CyberPassVault::wipe();
+    if (ensureSD()) {
+        CyberPassVault::wipe();
+        const char* backupFiles[] = {
+            "/cyberkey_backup.json",
+            "/cyberkey_backup.bak",
+            "/cyberkey_backup.json.migrate.tmp",
+            "/cyberkey_backup.json.migrate.old",
+            "/cyberkey_backup.bak.migrate.tmp",
+            "/cyberkey_backup.bak.migrate.old"
+        };
+        for (const char* path : backupFiles) {
+            if (SD.exists(path)) SD.remove(path);
+        }
+    } else {
+        CyberPassVault::count = 0;
+    }
+    CyberCrypto::lock();
+    CyberCrypto::allowLegacyMigration(false);
+    masterMigrationPending = false;
     loadSettings();
 }
 
@@ -1004,6 +1736,10 @@ bool ensureSD() {
 }
 
 bool backupToSD(bool force) {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        return false;
+    }
     if (!ensureSD()) {
         statusMessage = "SD Card Not Detected";
         return false;
@@ -1015,29 +1751,43 @@ bool backupToSD(bool force) {
         return false;
     }
 
-    // If a backup already exists and has accounts, preserve it as a rolling .bak
-    if (SD.exists("/cyberkey_backup.json") && SD.exists("/cyberkey_backup.bak")) {
-        SD.remove("/cyberkey_backup.bak");
-    }
     if (SD.exists("/cyberkey_backup.json")) {
-        // Copy current to .bak before replacing
-        File src = SD.open("/cyberkey_backup.json", FILE_READ);
-        if (src) {
-            File dst = SD.open("/cyberkey_backup.bak", FILE_WRITE);
-            if (dst) {
-                while (src.available()) {
-                    dst.write(src.read());
-                }
-                dst.close();
-            }
-            src.close();
+        File previous = SD.open("/cyberkey_backup.json", FILE_READ);
+        if (!previous) {
+            statusMessage = "SD Read Error";
+            return false;
         }
-    }
+        std::vector<uint8_t> previousData(previous.size() + 1, 0);
+        size_t previousLength = previous.size();
+        size_t bytesRead = previous.read(previousData.data(), previousLength);
+        previous.close();
+        if (bytesRead != previousLength) {
+            statusMessage = "SD Read Error";
+            return false;
+        }
 
-    File file = SD.open("/cyberkey_backup.json", FILE_WRITE);
-    if (!file) {
-        statusMessage = "SD Write Error";
-        return false;
+        std::vector<uint8_t> backupData;
+        if (CyberCrypto::isSealed(previousData.data(), previousLength)) {
+            backupData.assign(previousData.begin(), previousData.begin() + previousLength);
+        } else {
+            String previousPlaintext(reinterpret_cast<const char*>(previousData.data()));
+            if (!CyberCrypto::seal(previousPlaintext, "backup", backupData)) {
+                statusMessage = "Backup Encryption Failed";
+                return false;
+            }
+        }
+
+        if (SD.exists("/cyberkey_backup.bak") && !SD.remove("/cyberkey_backup.bak")) {
+            statusMessage = "SD Backup Error";
+            return false;
+        }
+        File backup = SD.open("/cyberkey_backup.bak", FILE_WRITE);
+        if (!backup || backup.write(backupData.data(), backupData.size()) != backupData.size()) {
+            if (backup) backup.close();
+            statusMessage = "SD Backup Error";
+            return false;
+        }
+        backup.close();
     }
 
     JsonDocument doc;
@@ -1067,13 +1817,31 @@ bool backupToSD(bool force) {
     sObj["w_city"] = weatherCity;
     sObj["w_units"] = weatherUnits;
 
-    serializeJson(doc, file);
+    String plaintext;
+    serializeJson(doc, plaintext);
+    std::vector<uint8_t> encrypted;
+    if (!CyberCrypto::seal(plaintext, "backup", encrypted)) {
+        statusMessage = "Backup Encryption Failed";
+        return false;
+    }
+
+    File file = SD.open("/cyberkey_backup.json", FILE_WRITE);
+    if (!file || file.write(encrypted.data(), encrypted.size()) != encrypted.size()) {
+        if (file) file.close();
+        statusMessage = "SD Write Error";
+        return false;
+    }
     file.close();
     statusMessage = "SD Backup OK!";
+    statusMsgUntil = millis() + 3000;
     return true;
 }
 
 bool parseAndApplyBackupJSON(const String& jsonContent) {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        return false;
+    }
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, jsonContent);
     if (error) return false;
@@ -1089,7 +1857,7 @@ bool parseAndApplyBackupJSON(const String& jsonContent) {
                 accounts[accountCount].secret = obj["secret"].as<String>();
                 accountCount++;
             }
-            saveAccounts();
+            if (!saveAccounts()) return false;
         }
     }
 
@@ -1103,7 +1871,7 @@ bool parseAndApplyBackupJSON(const String& jsonContent) {
                 wifiList[wifiCount].pass = wObj["pass"].as<String>();
                 wifiCount++;
             }
-            saveWiFi();
+            if (!saveWiFi()) return false;
         }
     }
 
@@ -1127,6 +1895,10 @@ bool parseAndApplyBackupJSON(const String& jsonContent) {
 }
 
 bool restoreFromSD() {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        return false;
+    }
     if (!ensureSD()) {
         statusMessage = "SD Card Not Detected";
         return false;
@@ -1137,14 +1909,19 @@ bool restoreFromSD() {
         if (SD.exists(targets[t])) {
             File file = SD.open(targets[t], FILE_READ);
             if (file) {
-                String content = "";
-                while (file.available()) {
-                    content += (char)file.read();
-                }
+                size_t length = file.size();
+                std::vector<uint8_t> data(length + 1, 0);
+                size_t bytesRead = file.read(data.data(), length);
                 file.close();
+                if (bytesRead != length) continue;
 
-                if (parseAndApplyBackupJSON(content)) {
+                String content;
+                bool decoded = CyberCrypto::isSealed(data.data(), length)
+                                   ? CyberCrypto::open(data.data(), length, "backup", content)
+                                   : (content = String(reinterpret_cast<const char*>(data.data())), true);
+                if (decoded && parseAndApplyBackupJSON(content)) {
                     statusMessage = (t == 0) ? "SD Restore OK!" : "Restored from .bak!";
+                    statusMsgUntil = millis() + 3000;
                     return true;
                 }
             }
@@ -1163,6 +1940,11 @@ void powerDownWiFi() {
 }
 
 void connectWiFi(bool silent) {
+    if (isAPMode) {
+        dnsServer.stop();
+        WiFi.softAPdisconnect(true);
+        isAPMode = false;
+    }
     if (wifiCount > 0) {
         WiFi.mode(WIFI_STA);
 
@@ -1217,6 +1999,7 @@ void connectWiFi(bool silent) {
                 }
 
                 // Sync NTP
+                timeSynced = false;
                 configTime(0, 0, NTP_SERVER1, NTP_SERVER2, NTP_SERVER3);
                 applyTimezone();
                 struct tm timeinfo;
@@ -1323,11 +2106,7 @@ const char HTML_BOTTOM[] PROGMEM = R"rawliteral(  </div>
     <form action="/settings" method="POST">
       <label>Timezone</label>
       <select name="tz_name" id="tzSelect" onchange="updateTzPosix()">
-        <option value="US/Eastern" %TZ_EST%>Eastern Time (US/New York)</option>
-        <option value="US/Central" %TZ_CST%>Central Time (US/Chicago)</option>
-        <option value="US/Mountain" %TZ_MST%>Mountain Time (US/Denver)</option>
-        <option value="US/Pacific" %TZ_PST%>Pacific Time (US/Los Angeles)</option>
-        <option value="UTC" %TZ_UTC%>UTC</option>
+        %TZ_OPTIONS%
       </select>
       <input type="hidden" name="tz_posix" id="tzPosix" value="%TZ_POSIX%">
 
@@ -1390,7 +2169,19 @@ const char HTML_BOTTOM[] PROGMEM = R"rawliteral(  </div>
   </div>
 
   <div class="card">
-    <h2>🔑 Google Password Manager Import (MicroSD)</h2>
+    <h2>🔑 Password Vault (MicroSD)</h2>
+    <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Add or update a password for an account. Entries are encrypted on the MicroSD card and matched to 2FA accounts by service name and username.</p>
+    <form id="passwordForm" onsubmit="addPassword(event)">
+      <input type="text" name="name" placeholder="Service or account name (e.g. GitHub)" maxlength="64" required>
+      <input type="url" name="url" placeholder="Website URL (optional)" maxlength="256">
+      <input type="text" name="username" placeholder="Username or email (optional)" maxlength="128">
+      <input type="password" name="password" placeholder="Password" maxlength="256" required>
+      <input type="text" name="note" placeholder="Note (optional)" maxlength="256">
+      <button type="submit" class="btn-green">🔒 Save Password</button>
+    </form>
+    <div id="passwordStatus" style="font-size: 13px; color: #38bdf8; margin: 8px 0;"></div>
+    <hr style="border-color: #334155; margin: 16px 0;">
+    <h3 style="font-size: 14px; margin: 0 0 8px;">Import from Google Password Manager</h3>
     <p style="font-size: 13px; color: #94a3b8; margin-top: 0;">Upload your exported <code>passwords.csv</code> from Google Password Manager. Stored safely onto the MicroSD card.</p>
     <div class="dropzone" onclick="document.getElementById('csvInput').click()">
       Click or Drag &amp; Drop passwords.csv Here
@@ -1438,13 +2229,10 @@ const char HTML_BOTTOM[] PROGMEM = R"rawliteral(  </div>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <script>
     function updateTzPosix() {
-      const sel = document.getElementById('tzSelect').value;
+      const select = document.getElementById('tzSelect');
+      const selectedOption = select.options[select.selectedIndex];
       const posixInput = document.getElementById('tzPosix');
-      if (sel === 'US/Eastern') posixInput.value = 'EST5EDT,M3.2.0,M11.1.0';
-      else if (sel === 'US/Central') posixInput.value = 'CST6CDT,M3.2.0,M11.1.0';
-      else if (sel === 'US/Mountain') posixInput.value = 'MST7MDT,M3.2.0,M11.1.0';
-      else if (sel === 'US/Pacific') posixInput.value = 'PST8PDT,M3.2.0,M11.1.0';
-      else if (sel === 'UTC') posixInput.value = 'UTC0';
+      posixInput.value = selectedOption.dataset.posix;
     }
 
     function detectLocation() {
@@ -1491,6 +2279,29 @@ const char HTML_BOTTOM[] PROGMEM = R"rawliteral(  </div>
         status.innerText = "Upload error: connection interrupted.";
       };
       xhr.send(formData);
+    }
+
+    async function addPassword(event) {
+      event.preventDefault();
+      const form = event.target;
+      const status = document.getElementById('passwordStatus');
+      status.innerText = "Saving encrypted password...";
+
+      try {
+        const response = await fetch("/password_add", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams(new FormData(form))
+        });
+        const message = await response.text();
+        status.innerText = message;
+        if (response.ok) {
+          form.reset();
+          setTimeout(() => { window.location.reload(); }, 900);
+        }
+      } catch (error) {
+        status.innerText = "Save failed: connection interrupted.";
+      }
     }
 
     function decodeQR(file) {
@@ -1631,12 +2442,19 @@ void handleRoot() {
     }
     bottom.replace("%PASS_MATCHES%", String(passLinked));
 
-    // Timezone replacements
-    bottom.replace("%TZ_EST%", tzName == "US/Eastern" ? "selected" : "");
-    bottom.replace("%TZ_CST%", tzName == "US/Central" ? "selected" : "");
-    bottom.replace("%TZ_MST%", tzName == "US/Mountain" ? "selected" : "");
-    bottom.replace("%TZ_PST%", tzName == "US/Pacific" ? "selected" : "");
-    bottom.replace("%TZ_UTC%", tzName == "UTC" ? "selected" : "");
+    String timezoneOptions;
+    for (const TimeZoneOption& option : TIME_ZONE_OPTIONS) {
+        timezoneOptions += "<option value=\"";
+        timezoneOptions += option.id;
+        timezoneOptions += "\" data-posix=\"";
+        timezoneOptions += option.posix;
+        timezoneOptions += "\"";
+        if (tzName == option.id) timezoneOptions += " selected";
+        timezoneOptions += ">";
+        timezoneOptions += option.label;
+        timezoneOptions += "</option>";
+    }
+    bottom.replace("%TZ_OPTIONS%", timezoneOptions);
     bottom.replace("%TZ_POSIX%", tzPosix);
 
     // Format & Standby replacements
@@ -1700,6 +2518,13 @@ void handleSettings() {
 }
 
 void handleAdd() {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        statusMsgUntil = millis() + 3000;
+        server.sendHeader("Location", "/");
+        server.send(303);
+        return;
+    }
     if (server.hasArg("name") && server.hasArg("secret")) {
         int editIdx = server.hasArg("idx") ? server.arg("idx").toInt() : -1;
         String issuer = server.hasArg("issuer") ? server.arg("issuer") : "";
@@ -1727,6 +2552,13 @@ void handleAdd() {
 }
 
 void handleDelete() {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        statusMsgUntil = millis() + 3000;
+        server.sendHeader("Location", "/");
+        server.send(303);
+        return;
+    }
     if (server.hasArg("idx")) {
         int idx = server.arg("idx").toInt();
         if (idx >= 0 && idx < accountCount) {
@@ -1745,48 +2577,78 @@ void handleDelete() {
 }
 
 void handleWiFiAdd() {
-    if (server.hasArg("ssid")) {
-        if (wifiCount < MAX_WIFI) {
-            String ssid = server.arg("ssid");
-            String pass = server.arg("pass");
-
-            bool exists = false;
-            for (int i = 0; i < wifiCount; ++i) {
-                if (wifiList[i].ssid == ssid) {
-                    wifiList[i].pass = pass;
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                wifiList[wifiCount].ssid = ssid;
-                wifiList[wifiCount].pass = pass;
-                wifiCount++;
-            }
-            saveWiFi();
-        }
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        statusMsgUntil = millis() + 3000;
+        server.send(503, "text/plain", statusMessage);
+        return;
     }
+    if (!server.hasArg("ssid") || server.arg("ssid").length() == 0) {
+        server.send(400, "text/plain", "Wi-Fi SSID is required");
+        return;
+    }
+
+    String ssid = server.arg("ssid");
+    int index = 0;
+    while (index < wifiCount && wifiList[index].ssid != ssid) ++index;
+    if (index == wifiCount && wifiCount >= MAX_WIFI) {
+        server.send(409, "text/plain", "Wi-Fi network limit reached");
+        return;
+    }
+    if (index == wifiCount) ++wifiCount;
+    wifiList[index].ssid = ssid;
+    wifiList[index].pass = server.arg("pass");
+
+    if (!saveWiFi()) {
+        String error = statusMessage.length() > 0 ? statusMessage : "Wi-Fi save failed";
+        loadWiFi();
+        statusMessage = error;
+        statusMsgUntil = millis() + 5000;
+        server.send(500, "text/plain", error);
+        return;
+    }
+
     server.sendHeader("Location", "/");
     server.send(303);
 }
 
 void handleWiFiDel() {
-    if (server.hasArg("idx")) {
-        int idx = server.arg("idx").toInt();
-        if (idx >= 0 && idx < wifiCount) {
-            for (int i = idx; i < wifiCount - 1; ++i) {
-                wifiList[i] = wifiList[i + 1];
-            }
-            wifiCount--;
-            saveWiFi();
-        }
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        statusMsgUntil = millis() + 3000;
+        server.send(503, "text/plain", statusMessage);
+        return;
     }
+    if (!server.hasArg("idx")) {
+        server.send(400, "text/plain", "Wi-Fi network index is required");
+        return;
+    }
+
+    int idx = server.arg("idx").toInt();
+    if (idx < 0 || idx >= wifiCount) {
+        server.send(400, "text/plain", "Invalid Wi-Fi network index");
+        return;
+    }
+    for (int i = idx; i < wifiCount - 1; ++i) {
+        wifiList[i] = wifiList[i + 1];
+    }
+    wifiCount--;
+    if (!saveWiFi()) {
+        String error = statusMessage.length() > 0 ? statusMessage : "Wi-Fi save failed";
+        loadWiFi();
+        statusMessage = error;
+        statusMsgUntil = millis() + 5000;
+        server.send(500, "text/plain", error);
+        return;
+    }
+
     server.sendHeader("Location", "/");
     server.send(303);
 }
 
 void handleBackup() {
     backupToSD();
+    statusMsgUntil = millis() + 3000;
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -1799,13 +2661,20 @@ void handleRestore() {
 }
 
 void handleRestoreJSON() {
+    if (!CyberCrypto::isReady()) {
+        statusMessage = "Crypto Unit Required";
+        statusMsgUntil = millis() + 3000;
+        server.sendHeader("Location", "/");
+        server.send(303);
+        return;
+    }
     if (server.hasArg("json_content")) {
         String json = server.arg("json_content");
-        if (parseAndApplyBackupJSON(json)) {
-            backupToSD(true); // Persist safely onto SD
+        statusMessage = "";
+        if (parseAndApplyBackupJSON(json) && backupToSD(true)) {
             statusMessage = "JSON Vault Restored!";
         } else {
-            statusMessage = "Invalid Backup JSON";
+            if (statusMessage.length() == 0) statusMessage = "Restore Failed";
         }
         statusMsgUntil = millis() + 3000;
     }
@@ -1830,39 +2699,135 @@ void handleOTAFlash() {
     performOTAUpdate();
 }
 
-static File csvUploadFile;
+static constexpr size_t MAX_PASSWORD_CSV_UPLOAD_SIZE = 64 * 1024;
+static String csvUploadBuffer;
 static bool csvUploadPendingParse = false;
+static bool csvUploadTooLarge = false;
+
+void handlePasswordAdd() {
+    if (!CyberCrypto::isReady()) {
+        server.send(503, "text/plain", "Crypto Unit Required");
+        return;
+    }
+    if (!ensureSD()) {
+        server.send(503, "text/plain", "SD Card Not Detected");
+        return;
+    }
+    if (!server.hasArg("name") || !server.hasArg("password")) {
+        server.send(400, "text/plain", "Service name and password are required");
+        return;
+    }
+
+    String name = server.arg("name");
+    String url = server.hasArg("url") ? server.arg("url") : "";
+    String username = server.hasArg("username") ? server.arg("username") : "";
+    String password = server.arg("password");
+    String note = server.hasArg("note") ? server.arg("note") : "";
+    name.trim();
+    url.trim();
+    username.trim();
+    note.trim();
+
+    if (name.length() == 0 || password.length() == 0) {
+        server.send(400, "text/plain", "Service name and password are required");
+        return;
+    }
+    if (name.length() > 64 || url.length() > 256 || username.length() > 128 ||
+        password.length() > 256 || note.length() > 256) {
+        server.send(400, "text/plain", "One or more fields exceed the allowed length");
+        return;
+    }
+
+    const bool hasVaultData = SD.exists("/passwords.json") ||
+                              SD.exists("/passwords.csv") ||
+                              SD.exists("/passwords.old");
+    if (hasVaultData) {
+        if (!CyberPassVault::init()) {
+            server.send(500, "text/plain", "Could not load the existing password vault");
+            return;
+        }
+    } else {
+        CyberPassVault::count = 0;
+    }
+
+    int index = 0;
+    while (index < CyberPassVault::count &&
+           !(CyberPassVault::passwords[index].name.equalsIgnoreCase(name) &&
+             CyberPassVault::passwords[index].username.equalsIgnoreCase(username))) {
+        ++index;
+    }
+    if (index == CyberPassVault::count && CyberPassVault::count >= MAX_SD_PASSWORDS) {
+        server.send(409, "text/plain", "Password vault is full");
+        return;
+    }
+    if (index == CyberPassVault::count) ++CyberPassVault::count;
+
+    CyberPassVault::passwords[index].name = name;
+    CyberPassVault::passwords[index].url = url;
+    CyberPassVault::passwords[index].username = username;
+    CyberPassVault::passwords[index].password = password;
+    CyberPassVault::passwords[index].note = note;
+
+    if (!CyberPassVault::saveToSD()) {
+        const bool restored = CyberPassVault::loadFromSD();
+        server.send(500, "text/plain", restored
+                    ? "Password vault save failed"
+                    : "Password vault save failed and the vault could not be reloaded");
+        return;
+    }
+
+    statusMessage = "Password Saved!";
+    statusMsgUntil = millis() + 3000;
+    server.send(200, "text/plain", "Password saved to encrypted MicroSD vault");
+}
 
 void handleUploadCSVProcess() {
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
-        ensureSD();
-        if (SD.exists("/passwords.csv")) SD.remove("/passwords.csv");
-        csvUploadFile = SD.open("/passwords.csv", FILE_WRITE);
+        csvUploadBuffer = "";
+        csvUploadPendingParse = false;
+        csvUploadTooLarge = false;
+        if (!CyberCrypto::isReady()) {
+            csvUploadPendingParse = false;
+            return;
+        }
+        csvUploadBuffer.reserve(4096);
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (csvUploadFile) {
-            csvUploadFile.write(upload.buf, upload.currentSize);
+        if (!csvUploadTooLarge) {
+            if (csvUploadBuffer.length() + upload.currentSize > MAX_PASSWORD_CSV_UPLOAD_SIZE) {
+                csvUploadTooLarge = true;
+                csvUploadBuffer = "";
+            } else {
+                csvUploadBuffer.concat(reinterpret_cast<const char*>(upload.buf), upload.currentSize);
+            }
         }
     } else if (upload.status == UPLOAD_FILE_END) {
-        if (csvUploadFile) {
-            csvUploadFile.close();
-            csvUploadPendingParse = true;
-        }
+        csvUploadPendingParse = CyberCrypto::isReady() && !csvUploadTooLarge;
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        csvUploadBuffer = "";
+        csvUploadPendingParse = false;
+        csvUploadTooLarge = false;
     }
 }
 
 void handleUploadCSVComplete() {
+    if (!CyberCrypto::isReady()) {
+        server.send(503, "text/plain", "Crypto Unit Required");
+        return;
+    }
+    if (csvUploadTooLarge) {
+        csvUploadBuffer = "";
+        csvUploadTooLarge = false;
+        server.send(413, "text/plain", "CSV upload too large");
+        return;
+    }
     server.send(200, "text/plain", "OK");
     if (csvUploadPendingParse) {
         csvUploadPendingParse = false;
-        File readFile = SD.open("/passwords.csv", FILE_READ);
-        int imported = 0;
-        if (readFile) {
-            imported = CyberPassVault::importCSVFile(readFile);
-            readFile.close();
-            SD.remove("/passwords.csv");
-        }
-        statusMessage = "Imported " + String(imported) + " Passwords!";
+        int imported = CyberPassVault::importGoogleCSV(csvUploadBuffer);
+        csvUploadBuffer = "";
+        statusMessage = imported < 0 ? "Password Vault Save Failed"
+                                     : "Imported " + String(imported) + " Passwords!";
         statusMsgUntil = millis() + 3500;
     }
 }
@@ -1880,6 +2845,7 @@ void setupWebServer() {
     server.on("/backup", HTTP_POST, handleBackup);
     server.on("/restore", HTTP_POST, handleRestore);
     server.on("/restore_json", HTTP_POST, handleRestoreJSON);
+    server.on("/password_add", HTTP_POST, handlePasswordAdd);
     server.on("/upload_csv", HTTP_POST, handleUploadCSVComplete, handleUploadCSVProcess);
     server.onNotFound([]() {
         if (isAPMode) {

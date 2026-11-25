@@ -2,7 +2,9 @@
 #include <Arduino.h>
 
 // Initializes BLE HID Keyboard (Advertises as "CyberKey BLE")
-void initBLEKeyboard();
+bool initBLEKeyboard();
+bool setBLEKeyboardEnabled(bool enabled);
+bool isBLEKeyboardEnabled();
 
 // Returns true if a host (phone, laptop, iPad) is paired and connected over BLE
 bool isBLEConnected();
