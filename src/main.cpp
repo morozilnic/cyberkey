@@ -1,4 +1,5 @@
 #include <M5Cardputer.h>
+#include <esp_system.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -29,7 +30,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.6"
+#define FIRMWARE_VERSION "1.3.7"
 #define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
 static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
@@ -256,33 +257,6 @@ void checkForOTAUpdates(bool notify) {
     }
 }
 
-static void otaProgressCallback(size_t current, size_t total) {
-    static int lastProgressPercent = -1;
-    const int pct = (total > 0) ? static_cast<int>((current * 100) / total) : 0;
-    if (pct == lastProgressPercent && current < total) {
-        delay(1);
-        return;
-    }
-    lastProgressPercent = pct;
-
-    canvas.fillScreen(TFT_BLACK);
-    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("CyberKey OTA Update", 120, 25, 2);
-
-    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
-    canvas.drawString(String(pct) + "% (" + String(current / 1024) + " KB)", 120, 55, 2);
-
-    int barWidth = (total > 0) ? static_cast<int>((current * 200) / total) : 0;
-    canvas.drawRect(19, 79, 202, 12, TFT_DARKGRAY);
-    canvas.fillRect(20, 80, barWidth, 10, TFT_GREEN);
-
-    canvas.setTextColor(0xFBE0, TFT_BLACK); // Gold/Orange warning
-    canvas.drawString("DO NOT POWER OFF", 120, 105, 2);
-    canvas.pushSprite(0, 0);
-    delay(1);
-}
-
 void performOTAUpdate() {
     if (WiFi.status() != WL_CONNECTED || isAPMode || wifiSleeping) {
         statusMessage = "Need Wi-Fi for OTA";
@@ -312,7 +286,9 @@ void performOTAUpdate() {
     HTTPClient http;
     WiFiClientSecure secureClient;
     secureClient.setInsecure();
+    Serial.println("OTA: connecting to release asset");
     if (!http.begin(secureClient, targetUrl)) {
+        Serial.println("OTA: HTTPClient begin failed");
         statusMessage = "GitHub release connection failed";
         statusMsgUntil = millis() + 3000;
         return;
@@ -323,6 +299,7 @@ void performOTAUpdate() {
 
     int httpCode = http.GET();
     if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("OTA: release HTTP status %d\n", httpCode);
         statusMessage = "HTTP Error: " + String(httpCode);
         statusMsgUntil = millis() + 3000;
         http.end();
@@ -331,6 +308,7 @@ void performOTAUpdate() {
 
     const int contentLength = http.getSize();
     if (contentLength <= 0) {
+        Serial.printf("OTA: invalid content length %d\n", contentLength);
         statusMessage = "Invalid Size";
         statusMsgUntil = millis() + 3000;
         http.end();
@@ -338,17 +316,31 @@ void performOTAUpdate() {
     }
 
     if (!Update.begin(contentLength)) {
+        Serial.printf("OTA: Update.begin failed, error %u\n",
+                      static_cast<unsigned int>(Update.getError()));
         statusMessage = "Not Enough Space";
         statusMsgUntil = millis() + 3000;
         http.end();
         return;
     }
 
-    Update.onProgress(otaProgressCallback);
+    canvas.fillScreen(TFT_BLACK);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("CyberKey OTA Update", 120, 30, 2);
+    canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+    canvas.drawString("Downloading firmware...", 120, 60, 1);
+    canvas.drawString("DO NOT POWER OFF", 120, 85, 2);
+    canvas.pushSprite(0, 0);
+
     WiFiClient* stream = http.getStreamPtr();
+    Serial.printf("OTA: download started, %d bytes expected\n", contentLength);
     const size_t written = Update.writeStream(*stream);
     const bool transferComplete = written == static_cast<size_t>(contentLength) &&
                                   Update.isFinished() && !Update.hasError();
+    Serial.printf("OTA: download returned %u/%d bytes, updater error %u\n",
+                  static_cast<unsigned int>(written), contentLength,
+                  static_cast<unsigned int>(Update.getError()));
     http.end();
     if (!transferComplete) {
         const uint8_t updateError = Update.getError();
@@ -374,6 +366,8 @@ void performOTAUpdate() {
 
     if (!Update.end()) {
         const uint8_t updateError = Update.getError();
+        Serial.printf("OTA: Update.end failed, error %u\n",
+                      static_cast<unsigned int>(updateError));
         statusMessage = "Flash Error: " + String(updateError);
         statusMsgUntil = millis() + 3000;
         canvas.fillScreen(TFT_BLACK);
@@ -892,6 +886,8 @@ bool runMasterPasswordGate() {
 }
 
 void setup() {
+    Serial.printf("CyberKey v%s boot; reset reason %d\n", FIRMWARE_VERSION,
+                  static_cast<int>(esp_reset_reason()));
     auto cfg = M5.config();
     cfg.internal_spk = true;
     cfg.internal_mic = false;
@@ -917,7 +913,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey v1.3.6", 120, 104, 2);
+    M5Cardputer.Display.drawString("CyberKey v1.3.7", 120, 104, 2);
     M5Cardputer.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
     M5Cardputer.Display.drawString("UNOFFICIAL MOD - NOT ORIGINAL", 120, 124, 1);
     M5Cardputer.Display.setTextDatum(top_left);
