@@ -1,5 +1,5 @@
 {
-  "version": "1.3.3",
+  "version": "1.3.4",
   "bin_url": "https://github.com/morozilnic/cyberkey/releases/latest/download/CyberKey-app.bin",
-  "notes": "CyberKey v1.3.3; use the built-in OTA stream writer, verify the full image before activation, and free the HTTPS connection before flashing"
+  "notes": "CyberKey v1.3.4; boot screen identifies this fork as an unofficial mod"
 }

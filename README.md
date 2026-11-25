@@ -1,6 +1,6 @@
 # 🔐 CyberKey with CRYPTO unit — Standalone Hardware 2FA & Password Vault for M5Stack Cardputer
 
-> **How this version differs from the original:** Adds Crypto Unit-backed encryption with a master-password/recovery lock, a MicroSD password vault and web password management, expanded time-zone support, Wi-Fi/NTP recovery, and Cardputer-specific UI/OTA improvements. BLE HID is off by default; long on-screen labels scroll instead of being cut off. Original CyberKey code by **sndjy**.
+> **How this version differs from the original:** Adds Crypto Unit-backed encryption with a master-password/recovery lock, a MicroSD password vault and web password management, expanded time-zone support, Wi-Fi/NTP recovery, and Cardputer-specific UI/OTA improvements. The boot screen identifies this fork as an unofficial mod. BLE HID is off by default; long on-screen labels scroll instead of being cut off. Original CyberKey code by **sndjy**.
 
 <p align="center">
   <b>A standalone TOTP authenticator with a Crypto Unit-backed master-password lock, USB/BLE auto-typing, an encrypted MicroSD password vault, and OTA updates.</b>
@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Platform-ESP32--S3-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Device-M5Stack%20Cardputer-red?style=flat-square" alt="Device">
   <img src="https://img.shields.io/badge/TOTP-RFC%206238-green?style=flat-square" alt="RFC 6238">
-  <img src="https://img.shields.io/badge/Version-v1.3.3-brightgreen?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-v1.3.4-brightgreen?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-purple?style=flat-square" alt="License">
 </p>
 
