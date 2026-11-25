@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Platform-ESP32--S3-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Device-M5Stack%20Cardputer-red?style=flat-square" alt="Device">
   <img src="https://img.shields.io/badge/TOTP-RFC%206238-green?style=flat-square" alt="RFC 6238">
-  <img src="https://img.shields.io/badge/Version-v1.3.1-brightgreen?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-v1.3.2-brightgreen?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-purple?style=flat-square" alt="License">
 </p>
 
@@ -69,7 +69,7 @@ Whether you're authenticating into GitHub, Google, AWS, or your home server, sim
 - 🔔 **Audio Countdown Ticks**:
   - Optional subtle audio chirp during the final 3 seconds of a TOTP cycle to alert you when a code is about to expire (toggle with `M`).
 - 🚨 **Emergency Panic Wipe**:
-  - Double-tap `Del` to wipe keys, Wi-Fi profiles, master-password configuration, MicroSD password vault, and SD backups; setup must be completed again.
+  - Double-tap `Del` in the main interface, or enter a wrong master password and double-tap `Del` at the lock screen, to wipe keys, Wi-Fi profiles, master-password configuration, MicroSD password vault, and SD backups; setup must be completed again.
 
 ### 🔐 Crypto Unit-backed secret storage
 
@@ -77,7 +77,7 @@ The M5Stack Unit CRYPTO / Unit ID (ATECC608B-TNGTLS) must be connected to Cardpu
 
 Enter the master password on the Cardputer at each boot. Until it is accepted, the normal interface, USB/BLE HID, Wi-Fi, NTP, and web portal remain stopped. The Crypto Unit can be reinitialized after a disconnect; CyberKey then reloads protected Wi-Fi data and retries connection and time synchronization. Existing records from earlier firmware are migrated after the first successful password setup; keep the Crypto Unit and any MicroSD card with vault/backup files connected until migration finishes.
 
-The recovery code can be entered after a failed password attempt by pressing `R`. It unlocks the existing data and lets you set a new password and recovery code. If both the master password and recovery code are lost, the data cannot be recovered; the emergency wipe erases the stored master wrappers and starts setup again.
+The recovery code can be entered after a failed password attempt by pressing `R`. It unlocks the existing data and lets you set a new password and recovery code. If the new password is shorter than 8 characters, you can retry it without entering the recovery code again. If both the master password and recovery code are lost, enter any password, then double-tap `Del` at the lock screen to confirm a full wipe and start setup again.
 
 ---
 
@@ -97,7 +97,7 @@ The recovery code can be entered after a failed password attempt by pressing `R`
 | <kbd>M</kbd> | Toggle Expiration Audio Chirp (ON / OFF) |
 | <kbd>B</kbd> | Quick Backup to MicroSD Card (`/cyberkey_backup.json`) |
 | <kbd>R</kbd> | Quick Restore from MicroSD Card |
-| <kbd>Del</kbd> | Emergency Panic Wipe (press twice to wipe flash & SD passwords) |
+| <kbd>Del</kbd> | Emergency Panic Wipe (press twice in the main interface or at the startup lock screen) |
 
 ---
 

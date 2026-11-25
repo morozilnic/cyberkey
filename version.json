@@ -1,5 +1,5 @@
 {
-  "version": "1.3.1",
+  "version": "1.3.2",
   "bin_url": "https://github.com/morozilnic/cyberkey/releases/latest/download/CyberKey-app.bin",
-  "notes": "CyberKey v1.3.1; OTA updates now use the morozilnic/cyberkey GitHub Releases"
+  "notes": "CyberKey v1.3.2; retry short recovery passwords without re-entering the recovery code and factory-reset from the startup lock screen"
 }

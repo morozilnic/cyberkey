@@ -29,7 +29,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.1"
+#define FIRMWARE_VERSION "1.3.2"
 #define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
 static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
@@ -616,13 +616,26 @@ void showRecoveryCode(const String& recoveryCode, const String& heading) {
     }
 }
 
+bool confirmStartupReset(bool confirmationStarted = false);
+
 bool waitForRecoveryChoice() {
-    showStartupMessage("Incorrect password", "Press R for recovery code", "Press Enter to retry");
+    showStartupMessage("Incorrect password", "R: recovery  Enter: retry", "Del twice: factory reset");
     while (true) {
         M5Cardputer.update();
         if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
             const Keyboard_Class::KeysState keys = M5Cardputer.Keyboard.keysState();
-            if (keys.enter || keys.del) return false;
+            if (keys.enter) return false;
+            if (keys.del) {
+                if (confirmStartupReset(true)) {
+                    showStartupMessage("Erasing all data", "Restarting...");
+                    wipeAllData();
+                    delay(700);
+                    ESP.restart();
+                    return false;
+                }
+                showStartupMessage("Incorrect password", "R: recovery  Enter: retry", "Del twice: factory reset");
+                continue;
+            }
             for (const char key : keys.word) {
                 if (tolower(static_cast<unsigned char>(key)) == 'r') return true;
             }
@@ -631,29 +644,32 @@ bool waitForRecoveryChoice() {
     }
 }
 
-bool confirmStartupReset() {
-    showStartupMessage("Master setup error", "Press Del twice to erase data", "Press Enter to retry");
-    while (true) {
+bool confirmStartupReset(bool confirmationStarted) {
+    if (!confirmationStarted) {
+        showStartupMessage("Erase all data?", "Press Del to confirm", "Enter to cancel");
+        while (true) {
+            M5Cardputer.update();
+            if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+                const Keyboard_Class::KeysState keys = M5Cardputer.Keyboard.keysState();
+                if (keys.enter) return false;
+                if (keys.del) break;
+            }
+            delay(20);
+        }
+    }
+
+    showStartupMessage("Confirm full wipe", "Press Del again within 5s", "Enter to cancel");
+    const unsigned long started = millis();
+    while (millis() - started < 5000) {
         M5Cardputer.update();
         if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
             const Keyboard_Class::KeysState keys = M5Cardputer.Keyboard.keysState();
             if (keys.enter) return false;
-            if (keys.del) {
-                showStartupMessage("Confirm full wipe", "Press Del again within 5s");
-                const unsigned long started = millis();
-                while (millis() - started < 5000) {
-                    M5Cardputer.update();
-                    if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed() &&
-                        M5Cardputer.Keyboard.keysState().del) {
-                        return true;
-                    }
-                    delay(20);
-                }
-                return false;
-            }
+            if (keys.del) return true;
         }
         delay(20);
     }
+    return false;
 }
 
 bool migrateBackupFile(const char* path) {
@@ -802,19 +818,18 @@ bool runMasterPasswordGate() {
                 continue;
             }
 
-            String newPassword = readStartupSecret("Set new password", 64);
-            if (newPassword.length() < 8) {
-                CyberCrypto::lock();
-                showStartupMessage("Password too short", "Use at least 8 characters");
-                delay(1200);
-                continue;
-            }
-            String confirmation = readStartupSecret("Confirm new password", 64);
-            if (newPassword != confirmation) {
-                CyberCrypto::lock();
-                showStartupMessage("Passwords do not match", "Restart to use recovery again");
+            String newPassword;
+            while (true) {
+                newPassword = readStartupSecret("Set new password", 64);
+                if (newPassword.length() < 8) {
+                    showStartupMessage("Password too short", "Use at least 8 characters", "Enter a new password");
+                    delay(1200);
+                    continue;
+                }
+                const String confirmation = readStartupSecret("Confirm new password", 64);
+                if (newPassword == confirmation) break;
+                showStartupMessage("Passwords do not match", "Enter the new password again");
                 delay(1500);
-                continue;
             }
 
             String newRecoveryCode;
@@ -873,7 +888,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey 2FA v1.3.1 🚀", 120, 106, 2);
+    M5Cardputer.Display.drawString("CyberKey 2FA v1.3.2 🚀", 120, 106, 2);
     M5Cardputer.Display.setTextDatum(top_left);
     delay(1800);
 
