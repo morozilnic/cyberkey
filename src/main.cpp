@@ -885,6 +885,67 @@ bool runMasterPasswordGate() {
     }
 }
 
+static void clearSensitiveString(String& value) {
+    for (size_t i = 0; i < value.length(); ++i) {
+        value[i] = '\0';
+    }
+    value.remove(0);
+}
+
+static void lockAndReauthenticate() {
+    CyberCrypto::lock();
+
+    for (Account& account : accounts) {
+        clearSensitiveString(account.issuer);
+        clearSensitiveString(account.name);
+        clearSensitiveString(account.secret);
+    }
+    accountCount = 0;
+    currentIndex = 0;
+
+    for (WiFiCred& wifi : wifiList) {
+        clearSensitiveString(wifi.ssid);
+        clearSensitiveString(wifi.pass);
+    }
+    wifiCount = 0;
+
+    for (PasswordEntry& password : CyberPassVault::passwords) {
+        clearSensitiveString(password.name);
+        clearSensitiveString(password.url);
+        clearSensitiveString(password.username);
+        clearSensitiveString(password.password);
+        clearSensitiveString(password.note);
+    }
+    CyberPassVault::count = 0;
+    clearSensitiveString(connectedSSID);
+    statusMessage = "";
+
+    server.stop();
+    showStartupMessage("Locked", "Enter master password");
+    delay(700);
+    while (!runMasterPasswordGate()) {
+        delay(250);
+    }
+
+    if (!loadAccounts()) {
+        statusMessage = "Account Decryption Failed";
+        statusMsgUntil = millis() + 5000;
+    }
+    if (ensureSD() && !CyberPassVault::init() &&
+        (SD.exists("/passwords.json") || SD.exists("/passwords.csv"))) {
+        statusMessage = "Password Vault Load Failed";
+        statusMsgUntil = millis() + 5000;
+    }
+    if (!loadWiFi()) {
+        statusMessage = "WiFi Decryption Failed";
+        statusMsgUntil = millis() + 5000;
+    }
+
+    server.begin();
+    M5Cardputer.Display.setBrightness(BRIGHTNESS_NORMAL);
+    lastActivityTime = millis();
+}
+
 void setup() {
     Serial.printf("CyberKey v%s boot; reset reason %d\n", FIRMWARE_VERSION,
                   static_cast<int>(esp_reset_reason()));
@@ -969,6 +1030,11 @@ void setup() {
 
 void loop() {
     M5Cardputer.update();
+
+    if (M5Cardputer.BtnA.wasClicked()) {
+        lockAndReauthenticate();
+        return;
+    }
 
     static unsigned long lastCryptoCheck = 0;
     if (millis() - lastCryptoCheck >= 3000) {
