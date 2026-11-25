@@ -1,4 +1,4 @@
-# 🔐 CyberKey — Standalone Hardware 2FA & Password Vault for M5Stack Cardputer
+# 🔐 CyberKey with CRYPTO unit — Standalone Hardware 2FA & Password Vault for M5Stack Cardputer
 
 > **How this version differs from the original:** Adds Crypto Unit-backed encryption with a master-password/recovery lock, a MicroSD password vault and web password management, expanded time-zone support, Wi-Fi/NTP recovery, and Cardputer-specific UI/OTA improvements. BLE HID is off by default; long on-screen labels scroll instead of being cut off. Original CyberKey code by **sndjy**.
 

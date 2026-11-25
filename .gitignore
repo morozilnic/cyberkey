@@ -1,3 +1,5 @@
 .pio/
 .vscode/
 *.bin
+!CyberKey-app.bin
+!CyberKey-complete.bin
