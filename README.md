@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Platform-ESP32--S3-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Device-M5Stack%20Cardputer-red?style=flat-square" alt="Device">
   <img src="https://img.shields.io/badge/TOTP-RFC%206238-green?style=flat-square" alt="RFC 6238">
-  <img src="https://img.shields.io/badge/Version-v1.3.2-brightgreen?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/Version-v1.3.3-brightgreen?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/License-MIT-purple?style=flat-square" alt="License">
 </p>
 

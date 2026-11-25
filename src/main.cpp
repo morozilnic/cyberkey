@@ -29,7 +29,7 @@
 #define NTP_SERVER2 "time.cloudflare.com"
 #define NTP_SERVER3 "pool.ntp.org"
 
-#define FIRMWARE_VERSION "1.3.2"
+#define FIRMWARE_VERSION "1.3.3"
 #define OTA_VERSION_URL  "https://raw.githubusercontent.com/morozilnic/cyberkey/main/version.json"
 static const char* OTA_RELEASE_URL_PREFIX = "https://github.com/morozilnic/cyberkey/releases/";
 
@@ -256,17 +256,17 @@ void checkForOTAUpdates(bool notify) {
     }
 }
 
-static void otaProgressCallback(int current, int total) {
+static void otaProgressCallback(size_t current, size_t total) {
     canvas.fillScreen(TFT_BLACK);
     canvas.setTextColor(TFT_CYAN, TFT_BLACK);
     canvas.setTextDatum(middle_center);
     canvas.drawString("CyberKey OTA Update", 120, 25, 2);
 
-    int pct = (total > 0) ? (current * 100 / total) : 0;
+    int pct = (total > 0) ? static_cast<int>((current * 100) / total) : 0;
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
     canvas.drawString(String(pct) + "% (" + String(current / 1024) + " KB)", 120, 55, 2);
 
-    int barWidth = (total > 0) ? map(current, 0, total, 0, 200) : 0;
+    int barWidth = (total > 0) ? static_cast<int>((current * 200) / total) : 0;
     canvas.drawRect(19, 79, 202, 12, TFT_DARKGRAY);
     canvas.fillRect(20, 80, barWidth, 10, TFT_GREEN);
 
@@ -311,7 +311,7 @@ void performOTAUpdate() {
         return;
     }
 
-    http.setTimeout(15000);
+    http.setTimeout(30000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
     int httpCode = http.GET();
@@ -322,7 +322,7 @@ void performOTAUpdate() {
         return;
     }
 
-    int contentLength = http.getSize();
+    const int contentLength = http.getSize();
     if (contentLength <= 0) {
         statusMessage = "Invalid Size";
         statusMsgUntil = millis() + 3000;
@@ -337,36 +337,34 @@ void performOTAUpdate() {
         return;
     }
 
+    Update.onProgress(otaProgressCallback);
     WiFiClient* stream = http.getStreamPtr();
-    size_t written = 0;
-    uint8_t buff[1024];
-
-    while (http.connected() && (written < (size_t)contentLength)) {
-        size_t avail = stream->available();
-        if (avail) {
-            int readBytes = stream->readBytes(buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
-            Update.write(buff, readBytes);
-            written += readBytes;
-            otaProgressCallback(written, contentLength);
-        }
-        delay(1);
+    const size_t written = Update.writeStream(*stream);
+    const bool transferComplete = written == static_cast<size_t>(contentLength) &&
+                                  Update.isFinished() && !Update.hasError();
+    http.end();
+    if (!transferComplete) {
+        const uint8_t updateError = Update.getError();
+        Update.abort();
+        statusMessage = "OTA incomplete: " + String(updateError);
+        statusMsgUntil = millis() + 5000;
+        return;
     }
 
-    if (Update.end() && Update.isFinished()) {
-        canvas.fillScreen(TFT_BLACK);
-        canvas.setTextColor(TFT_GREEN, TFT_BLACK);
-        canvas.setTextDatum(middle_center);
-        canvas.drawString("Update Success!", 120, 50, 2);
-        canvas.drawString("Rebooting...", 120, 80, 2);
-        canvas.pushSprite(0, 0);
-        delay(1500);
-        ESP.restart();
-    } else {
+    if (!Update.end()) {
         statusMessage = "Flash Error: " + String(Update.getError());
         statusMsgUntil = millis() + 3000;
+        return;
     }
 
-    http.end();
+    canvas.fillScreen(TFT_BLACK);
+    canvas.setTextColor(TFT_GREEN, TFT_BLACK);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("Update Success!", 120, 50, 2);
+    canvas.drawString("Rebooting...", 120, 80, 2);
+    canvas.pushSprite(0, 0);
+    delay(1500);
+    ESP.restart();
 }
 
 void applyTimezone() {
@@ -888,7 +886,7 @@ void setup() {
     M5Cardputer.Display.pushImage((240 - ICON_WIDTH) / 2, 6, ICON_WIDTH, ICON_HEIGHT, icon_rgb565);
     M5Cardputer.Display.setTextColor(TFT_CYAN, TFT_BLACK);
     M5Cardputer.Display.setTextDatum(top_center);
-    M5Cardputer.Display.drawString("CyberKey 2FA v1.3.2 🚀", 120, 106, 2);
+    M5Cardputer.Display.drawString("CyberKey 2FA v1.3.3 🚀", 120, 106, 2);
     M5Cardputer.Display.setTextDatum(top_left);
     delay(1800);
 
